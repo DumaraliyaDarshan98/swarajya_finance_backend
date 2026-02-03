@@ -11,6 +11,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { MailModule } from './modules/mail/mail.module';
 import { UserModule } from './modules/user/user.module';
 import { ClientsModule } from './modules/client/client.module';
+import { RoleModule } from './modules/role/role.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { ClientsModule } from './modules/client/client.module';
     MailModule,
     UserModule,
     ClientsModule,
+    RoleModule,
   ],
   controllers: [AppController],
   providers: [

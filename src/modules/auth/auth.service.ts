@@ -7,6 +7,8 @@ import { Role } from '../../enum/role.enum';
 import { MailService } from '../mail/mail.service';
 import { APIResponseInterface } from '../../interface/response.interface';
 
+export type PermissionEntry = { moduleCode: string; permissions: string[] };
+
 @Injectable()
 export class AuthService {
     constructor(
@@ -43,20 +45,64 @@ export class AuthService {
             throw new UnauthorizedException('Invalid email or password');
         }
 
+        const permissions = this.getUserPermissions(user);
+
         const accessToken = this.jwtService.sign({
             sub: user.id,
             role: user.role,
             clientId: user.client?.id,
         });
 
+        const { password, resetToken, resetTokenExpiry, ...userSafe } = user;
+
         return {
             code: HttpStatus.OK,
             message: 'Login successful',
             data: {
                 accessToken,
-                user,
+                user: userSafe,
+                permissions,
             },
         };
+    }
+
+    getUserPermissions(user: any): PermissionEntry[] {
+        if (user.role === Role.SUPER_ADMIN) {
+            return [
+                { moduleCode: 'CLIENT_MANAGEMENT', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+                { moduleCode: 'USER_MANAGEMENT', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+                { moduleCode: 'ROLE_MANAGEMENT', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+                { moduleCode: 'SETTINGS', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+                { moduleCode: 'INTERNAL_USER_MANAGEMENT', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+            ];
+        }
+        // Internal user: default role with client show + dashboard access
+        if (user.role === Role.INTERNAL_USER) {
+            return [
+                { moduleCode: 'CLIENT_MANAGEMENT', permissions: ['VIEW'] },
+            ];
+        }
+        if (user.customRole?.rolePermissions?.length) {
+            const byModule: Record<string, string[]> = {};
+            for (const rp of user.customRole.rolePermissions) {
+                if (rp.module?.code) {
+                    if (!byModule[rp.module.code]) byModule[rp.module.code] = [];
+                    if (rp.permission && !byModule[rp.module.code].includes(rp.permission)) {
+                        byModule[rp.module.code].push(rp.permission);
+                    }
+                }
+            }
+            return Object.entries(byModule).map(([moduleCode, permissions]) => ({ moduleCode, permissions }));
+        }
+        if (user.role === Role.CLIENT_ADMIN) {
+            return [
+                { moduleCode: 'CLIENT_MANAGEMENT', permissions: ['VIEW', 'LIST'] },
+                { moduleCode: 'USER_MANAGEMENT', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+                { moduleCode: 'ROLE_MANAGEMENT', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+                { moduleCode: 'SETTINGS', permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'] },
+            ];
+        }
+        return [];
     }
 
     async forgotPassword(email: string): Promise<APIResponseInterface<any>> {

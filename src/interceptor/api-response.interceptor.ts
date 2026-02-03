@@ -18,9 +18,9 @@ export class APIResponseInterceptor<T> implements NestInterceptor<T, APIResponse
         const controller: any = context.getClass();
         const response = context.switchToHttp().getResponse();
         
-        // Skip transformation for FileController
-        if (controller?.name === 'FileController') {
-          return response;
+        // Skip transformation for file/document controllers (raw response or file stream)
+        if (controller?.name === 'FileController' || controller?.name === 'UserDocumentsController') {
+          return data;
         }
 
         // Handle error responses

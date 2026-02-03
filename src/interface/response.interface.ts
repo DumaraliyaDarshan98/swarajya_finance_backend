@@ -11,3 +11,9 @@ export interface Pagination {
   page: number;
   pagePerRecord: number;
 }
+
+export interface UploadUrlData {
+  url: string;
+}
+
+export type UploadDocumentResponse = APIResponseInterface<UploadUrlData>;
