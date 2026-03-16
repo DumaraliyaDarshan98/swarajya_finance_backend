@@ -14,6 +14,7 @@ import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { CreateInternalUserDto } from './dto/create-internal-user.dto';
 import { UpdateInternalUserDto } from './dto/update-internal-user.dto';
 import { APIResponseInterface } from '../../interface/response.interface';
+import { SuperAdminSettingsService } from '../super-admin-settings/super-admin-settings.service';
 
 const DEFAULT_INTERNAL_USER_PASSWORD = 'Internal@123';
 
@@ -21,6 +22,7 @@ const DEFAULT_INTERNAL_USER_PASSWORD = 'Internal@123';
 export class UsersService {
   constructor(
     @InjectRepository(User) private repo: Repository<User>,
+    private readonly superAdminSettingsService: SuperAdminSettingsService,
   ) {}
 
   findByEmail(email: string) {
@@ -133,6 +135,32 @@ export class UsersService {
       message: 'Internal user created successfully',
       data: safe,
     };
+  }
+
+  /**
+   * ===== CLIENT USER CREATION (LIMIT ENFORCEMENT PLACEHOLDER) =====
+   *
+   * This method shows how to enforce the global max_client_users limit
+   * when implementing client user creation (Role.CLIENT_USER).
+   */
+  async validateClientUserCreationLimit(clientId: string): Promise<void> {
+    const settings =
+      await this.superAdminSettingsService.getEffectiveSettings();
+
+    if (!settings.data?.maxClientUsers) {
+      // Unlimited users if not configured
+      return;
+    }
+
+    const currentCount = await this.repo.count({
+      where: { role: Role.CLIENT_USER, client: { id: clientId } as any },
+    });
+
+    if (currentCount >= settings.data?.maxClientUsers) {
+      throw new ForbiddenException(
+        'User creation limit reached. Please contact the administrator.',
+      );
+    }
   }
 
   async findOne(

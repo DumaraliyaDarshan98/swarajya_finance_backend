@@ -12,6 +12,8 @@ import { MailModule } from './modules/mail/mail.module';
 import { UserModule } from './modules/user/user.module';
 import { ClientsModule } from './modules/client/client.module';
 import { RoleModule } from './modules/role/role.module';
+import { SuperAdminSettingsModule } from './modules/super-admin-settings/super-admin-settings.module';
+import { NotificationModule } from './modules/notification/notification.module';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { RoleModule } from './modules/role/role.module';
     UserModule,
     ClientsModule,
     RoleModule,
+    SuperAdminSettingsModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [
