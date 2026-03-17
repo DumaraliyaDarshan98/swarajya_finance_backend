@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { SuperAdminSettings } from './entities/super-admin-settings.entity';
 import { UpdateSuperAdminSettingsDto } from './dto/update-super-admin-settings.dto';
 import { APIResponseInterface } from 'src/interface/response.interface';
+import { CreateSettingDto } from './dto/create-setting.dto';
+import { UpdateSettingDto } from './dto/update-setting.dto';
 
 export interface EffectiveSuperAdminSettings {
   maxClientUsers: number | null;
@@ -61,6 +63,81 @@ export class SuperAdminSettingsService {
       code: HttpStatus.OK,
       message: 'Super admin settings fetched successfully',
       data: rows,
+    };
+  }
+
+  // ===== Generic CRUD for individual settings (for Super Admin UI) =====
+
+  async listAllSettings(): Promise<APIResponseInterface<SuperAdminSettings[]>> {
+    const rows = await this.repo.find({ order: { createdAt: 'DESC' } });
+    return {
+      code: HttpStatus.OK,
+      message: 'Settings fetched successfully',
+      data: rows,
+    };
+  }
+
+  async findOneSetting(id: number): Promise<APIResponseInterface<SuperAdminSettings>> {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row) {
+      throw new NotFoundException('Setting not found');
+    }
+    return {
+      code: HttpStatus.OK,
+      message: 'Setting fetched successfully',
+      data: row,
+    };
+  }
+
+  async createSetting(dto: CreateSettingDto): Promise<APIResponseInterface<SuperAdminSettings>> {
+    const entity = this.repo.create({
+      key: dto.key,
+      value: dto.value,
+      description: dto.description ?? null,
+      category: dto.category ?? null,
+      status: dto.status ?? true,
+    });
+    const saved = await this.repo.save(entity);
+    return {
+      code: HttpStatus.CREATED,
+      message: 'Setting created successfully',
+      data: saved,
+    };
+  }
+
+  async updateSetting(
+    id: number,
+    dto: UpdateSettingDto,
+  ): Promise<APIResponseInterface<SuperAdminSettings>> {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row) {
+      throw new NotFoundException('Setting not found');
+    }
+
+    if (dto.key !== undefined) row.key = dto.key;
+    if (dto.value !== undefined) row.value = dto.value;
+    if (dto.description !== undefined) row.description = dto.description;
+    if (dto.category !== undefined) row.category = dto.category;
+    if (dto.status !== undefined) row.status = dto.status;
+
+    const saved = await this.repo.save(row);
+    return {
+      code: HttpStatus.OK,
+      message: 'Setting updated successfully',
+      data: saved,
+    };
+  }
+
+  async deleteSetting(id: number): Promise<APIResponseInterface<null>> {
+    const row = await this.repo.findOne({ where: { id } });
+    if (!row) {
+      throw new NotFoundException('Setting not found');
+    }
+    await this.repo.remove(row);
+    return {
+      code: HttpStatus.OK,
+      message: 'Setting deleted successfully',
+      data: null,
     };
   }
 
