@@ -14,6 +14,7 @@ import { ClientsModule } from './modules/client/client.module';
 import { RoleModule } from './modules/role/role.module';
 import { SuperAdminSettingsModule } from './modules/super-admin-settings/super-admin-settings.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { VerificationModule } from './modules/verification/verification.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { NotificationModule } from './modules/notification/notification.module';
     RoleModule,
     SuperAdminSettingsModule,
     NotificationModule,
+    VerificationModule,
   ],
   controllers: [AppController],
   providers: [

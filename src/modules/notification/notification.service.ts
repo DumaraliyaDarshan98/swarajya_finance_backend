@@ -40,7 +40,7 @@ export class NotificationService {
     if (settings.data?.sendSmsNotifications && payload.toPhone) {
       // Placeholder: integrate with actual SMS provider here.
       // This keeps a single place to respect the SMS flag.
-      // eslint-disable-next-line no-console
+
       console.log(
         'SMS notification (stub):',
         payload.toPhone,
@@ -49,4 +49,3 @@ export class NotificationService {
     }
   }
 }
-

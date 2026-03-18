@@ -1,4 +1,10 @@
-import { IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class CreateSettingDto {
   @IsString()
@@ -25,4 +31,3 @@ export class CreateSettingDto {
   @IsBoolean()
   status?: boolean;
 }
-

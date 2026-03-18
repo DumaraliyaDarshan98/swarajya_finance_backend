@@ -11,4 +11,3 @@ import { SuperAdminSettingsController } from './super-admin-settings.controller'
   exports: [SuperAdminSettingsService],
 })
 export class SuperAdminSettingsModule {}
-

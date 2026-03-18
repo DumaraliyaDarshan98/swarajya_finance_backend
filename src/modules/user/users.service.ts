@@ -28,7 +28,12 @@ export class UsersService {
   findByEmail(email: string) {
     return this.repo.findOne({
       where: { email },
-      relations: ['client', 'customRole', 'customRole.rolePermissions', 'customRole.rolePermissions.module'],
+      relations: [
+        'client',
+        'customRole',
+        'customRole.rolePermissions',
+        'customRole.rolePermissions.module',
+      ],
     });
   }
 
@@ -68,10 +73,9 @@ export class UsersService {
 
     if (query.search?.trim()) {
       const term = `%${query.search.trim()}%`;
-      qb.andWhere(
-        '(user.fullName LIKE :term OR user.email LIKE :term)',
-        { term },
-      );
+      qb.andWhere('(user.fullName LIKE :term OR user.email LIKE :term)', {
+        term,
+      });
     }
 
     const [list, total] = await qb.skip(skip).take(limit).getManyAndCount();
@@ -97,8 +101,7 @@ export class UsersService {
     if (existing) {
       throw new ConflictException('User with this email already exists');
     }
-    const password =
-      dto.password?.trim() || DEFAULT_INTERNAL_USER_PASSWORD;
+    const password = dto.password?.trim() || DEFAULT_INTERNAL_USER_PASSWORD;
     const hashed = await bcrypt.hash(password, 10);
     const user = this.repo.create({
       fullName: dto.fullName,
@@ -211,7 +214,9 @@ export class UsersService {
       }
     } else if (reqUser.role === Role.CLIENT_ADMIN) {
       if (!user.client || user.client.id !== reqUser.clientId) {
-        throw new ForbiddenException('You can only update users of your client');
+        throw new ForbiddenException(
+          'You can only update users of your client',
+        );
       }
     } else {
       throw new ForbiddenException('Access denied');
@@ -220,7 +225,8 @@ export class UsersService {
     if (dto.employeeType != null) user.employeeType = dto.employeeType;
     if (dto.mobileNumber != null) user.mobileNumber = dto.mobileNumber;
     if (dto.alternateNumber != null) user.alternateNumber = dto.alternateNumber;
-    if (dto.educationDetails != null) user.educationDetails = dto.educationDetails;
+    if (dto.educationDetails != null)
+      user.educationDetails = dto.educationDetails;
     if (dto.flatPlotNo != null) user.flatPlotNo = dto.flatPlotNo;
     if (dto.addressLine1 != null) user.addressLine1 = dto.addressLine1;
     if (dto.addressLine2 != null) user.addressLine2 = dto.addressLine2;
@@ -232,13 +238,18 @@ export class UsersService {
     if (dto.resumeUrl != null) user.resumeUrl = dto.resumeUrl;
     if (dto.panUrl != null) user.panUrl = dto.panUrl;
     if (dto.addressProofUrl != null) user.addressProofUrl = dto.addressProofUrl;
-    if (dto.cancelledChequeUrl != null) user.cancelledChequeUrl = dto.cancelledChequeUrl;
-    if (dto.cancelledChequeUrl2 != null) user.cancelledChequeUrl2 = dto.cancelledChequeUrl2;
+    if (dto.cancelledChequeUrl != null)
+      user.cancelledChequeUrl = dto.cancelledChequeUrl;
+    if (dto.cancelledChequeUrl2 != null)
+      user.cancelledChequeUrl2 = dto.cancelledChequeUrl2;
     if (dto.offerLetterUrl != null) user.offerLetterUrl = dto.offerLetterUrl;
     if (dto.marksheet12Url != null) user.marksheet12Url = dto.marksheet12Url;
-    if (dto.graduationMarksheetUrl != null) user.graduationMarksheetUrl = dto.graduationMarksheetUrl;
-    if (dto.postGraduateCertUrl != null) user.postGraduateCertUrl = dto.postGraduateCertUrl;
-    if (dto.additionalCertUrl != null) user.additionalCertUrl = dto.additionalCertUrl;
+    if (dto.graduationMarksheetUrl != null)
+      user.graduationMarksheetUrl = dto.graduationMarksheetUrl;
+    if (dto.postGraduateCertUrl != null)
+      user.postGraduateCertUrl = dto.postGraduateCertUrl;
+    if (dto.additionalCertUrl != null)
+      user.additionalCertUrl = dto.additionalCertUrl;
     const saved = await this.repo.save(user);
     const { password, resetToken, resetTokenExpiry, ...safe } = saved;
     return {

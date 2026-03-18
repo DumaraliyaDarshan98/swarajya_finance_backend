@@ -52,7 +52,11 @@ export class ClientsController {
   @Patch(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
-  update(@Param('id') id: string, @Body() dto: UpdateClientDto, @Request() req: any) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateClientDto,
+    @Request() req: any,
+  ) {
     return this.service.update(id, dto, req.user);
   }
 }

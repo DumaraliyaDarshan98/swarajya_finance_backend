@@ -8,24 +8,37 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { APIResponseInterface, Pagination } from '../interface/response.interface';
+import {
+  APIResponseInterface,
+  Pagination,
+} from '../interface/response.interface';
 
 @Injectable()
-export class APIResponseInterceptor<T> implements NestInterceptor<T, APIResponseInterface<T>> {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<APIResponseInterface<T>> {
+export class APIResponseInterceptor<T> implements NestInterceptor<
+  T,
+  APIResponseInterface<T>
+> {
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<APIResponseInterface<T>> {
     return next.handle().pipe(
       map((data) => {
         const controller: any = context.getClass();
         const response = context.switchToHttp().getResponse();
-        
+
         // Skip transformation for file/document controllers (raw response or file stream)
-        if (controller?.name === 'FileController' || controller?.name === 'UserDocumentsController') {
+        if (
+          controller?.name === 'FileController' ||
+          controller?.name === 'UserDocumentsController'
+        ) {
           return data;
         }
 
         // Handle error responses
         if (
-          (response.statusCode === HttpStatus.OK || response.statusCode === HttpStatus.CREATED) &&
+          (response.statusCode === HttpStatus.OK ||
+            response.statusCode === HttpStatus.CREATED) &&
           data?.code !== HttpStatus.OK &&
           data?.code !== HttpStatus.CREATED
         ) {
@@ -38,7 +51,7 @@ export class APIResponseInterceptor<T> implements NestInterceptor<T, APIResponse
               data: data?.data || null,
               pagination: data?.pagination || null,
             },
-            errorCode
+            errorCode,
           );
         }
 
@@ -49,7 +62,7 @@ export class APIResponseInterceptor<T> implements NestInterceptor<T, APIResponse
           data: data?.data !== undefined ? data.data : data,
           pagination: data?.pagination || null,
         };
-      })
+      }),
     );
   }
 }

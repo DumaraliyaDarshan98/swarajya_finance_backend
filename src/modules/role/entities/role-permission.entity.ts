@@ -1,4 +1,10 @@
-import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, Unique } from 'typeorm';
+import {
+  Entity,
+  Column,
+  PrimaryGeneratedColumn,
+  ManyToOne,
+  Unique,
+} from 'typeorm';
 import { Permission } from '../../../enum/permission.enum';
 import { Role } from './role.entity';
 import { AppModule } from '../../module/entities/app-module.entity';
@@ -12,13 +18,17 @@ export class RolePermission {
   @Column({ name: 'role_id', type: 'uuid' })
   roleId: string;
 
-  @ManyToOne(() => Role, (role) => role.rolePermissions, { onDelete: 'CASCADE' })
+  @ManyToOne(() => Role, (role) => role.rolePermissions, {
+    onDelete: 'CASCADE',
+  })
   role: Role;
 
   @Column({ name: 'module_id', type: 'uuid' })
   moduleId: string;
 
-  @ManyToOne(() => AppModule, (module) => module.rolePermissions, { onDelete: 'CASCADE' })
+  @ManyToOne(() => AppModule, (module) => module.rolePermissions, {
+    onDelete: 'CASCADE',
+  })
   module: AppModule;
 
   @Column({ type: 'enum', enum: Permission })

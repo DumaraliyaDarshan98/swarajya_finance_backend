@@ -55,7 +55,11 @@ export class RolesController {
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
-  update(@Param('id') id: string, @Body() dto: UpdateRoleDto, @Request() req: any) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateRoleDto,
+    @Request() req: any,
+  ) {
     return this.service.update(id, dto, req.user);
   }
 

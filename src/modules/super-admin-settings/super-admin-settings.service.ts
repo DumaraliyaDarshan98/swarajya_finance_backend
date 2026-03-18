@@ -37,15 +37,21 @@ export class SuperAdminSettingsService {
           ? Number(maxRow.value) || null
           : null,
       sendEmailNotifications: !!(
-        emailRow && emailRow.status && emailRow.value === 'true'
+        emailRow &&
+        emailRow.status &&
+        emailRow.value === 'true'
       ),
       sendSmsNotifications: !!(
-        smsRow && smsRow.status && smsRow.value === 'true'
+        smsRow &&
+        smsRow.status &&
+        smsRow.value === 'true'
       ),
     };
   }
 
-  async getEffectiveSettings(): Promise<APIResponseInterface<EffectiveSuperAdminSettings>> {
+  async getEffectiveSettings(): Promise<
+    APIResponseInterface<EffectiveSuperAdminSettings>
+  > {
     const rows = await this.repo.find();
     return {
       code: HttpStatus.OK,
@@ -77,7 +83,9 @@ export class SuperAdminSettingsService {
     };
   }
 
-  async findOneSetting(id: number): Promise<APIResponseInterface<SuperAdminSettings>> {
+  async findOneSetting(
+    id: number,
+  ): Promise<APIResponseInterface<SuperAdminSettings>> {
     const row = await this.repo.findOne({ where: { id } });
     if (!row) {
       throw new NotFoundException('Setting not found');
@@ -89,7 +97,9 @@ export class SuperAdminSettingsService {
     };
   }
 
-  async createSetting(dto: CreateSettingDto): Promise<APIResponseInterface<SuperAdminSettings>> {
+  async createSetting(
+    dto: CreateSettingDto,
+  ): Promise<APIResponseInterface<SuperAdminSettings>> {
     const entity = this.repo.create({
       key: dto.key,
       value: dto.value,
@@ -147,7 +157,9 @@ export class SuperAdminSettingsService {
     const toSave: SuperAdminSettings[] = [];
 
     if (dto.maxClientUsers !== undefined) {
-      let row = await this.repo.findOne({ where: { key: KEY_MAX_CLIENT_USERS } });
+      let row = await this.repo.findOne({
+        where: { key: KEY_MAX_CLIENT_USERS },
+      });
       if (!row) {
         row = this.repo.create({
           key: KEY_MAX_CLIENT_USERS,
@@ -201,4 +213,3 @@ export class SuperAdminSettingsService {
     };
   }
 }
-

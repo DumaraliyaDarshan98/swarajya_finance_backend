@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner, Table } from 'typeorm';
 
-export class CreateSuperAdminSettings1731792000000
-  implements MigrationInterface
-{
+export class CreateSuperAdminSettings1731792000000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.createTable(
       new Table({
@@ -51,4 +49,3 @@ export class CreateSuperAdminSettings1731792000000
     await queryRunner.dropTable('super_admin_settings');
   }
 }
-

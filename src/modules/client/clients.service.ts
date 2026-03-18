@@ -28,7 +28,9 @@ export class ClientsService {
   ) {}
 
   async createClient(dto: CreateClientDto): Promise<APIResponseInterface<any>> {
-    const existing = await this.clientRepo.findOne({ where: { email: dto.email } });
+    const existing = await this.clientRepo.findOne({
+      where: { email: dto.email },
+    });
     if (existing) {
       throw new ConflictException('A client with this email already exists');
     }
@@ -103,7 +105,9 @@ export class ClientsService {
     const limit = Math.min(100, Math.max(1, query.limit ?? 10));
     const skip = (page - 1) * limit;
 
-    const qb = this.clientRepo.createQueryBuilder('client').orderBy('client.createdAt', 'DESC');
+    const qb = this.clientRepo
+      .createQueryBuilder('client')
+      .orderBy('client.createdAt', 'DESC');
 
     if (query.search?.trim()) {
       const term = `%${query.search.trim()}%`;
@@ -158,11 +162,15 @@ export class ClientsService {
     }
 
     if (user.role === Role.CLIENT_ADMIN && user.clientId !== id) {
-      throw new ForbiddenException('You can only update your own client details');
+      throw new ForbiddenException(
+        'You can only update your own client details',
+      );
     }
 
     if (dto.email && dto.email !== client.email) {
-      const existing = await this.clientRepo.findOne({ where: { email: dto.email } });
+      const existing = await this.clientRepo.findOne({
+        where: { email: dto.email },
+      });
       if (existing) {
         throw new ConflictException('A client with this email already exists');
       }
@@ -190,7 +198,9 @@ export class ClientsService {
     };
   }
 
-  async registerClient(dto: RegisterClientDto): Promise<APIResponseInterface<any>> {
+  async registerClient(
+    dto: RegisterClientDto,
+  ): Promise<APIResponseInterface<any>> {
     if (dto.password !== dto.confirmPassword) {
       throw new BadRequestException('Passwords do not match');
     }

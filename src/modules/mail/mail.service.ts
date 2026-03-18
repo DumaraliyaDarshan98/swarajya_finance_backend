@@ -32,12 +32,7 @@ export class MailService {
     return template(data);
   }
 
-  async sendMail(
-    to: string,
-    subject: string,
-    template: string,
-    data: any,
-  ) {
+  async sendMail(to: string, subject: string, template: string, data: any) {
     try {
       const html = this.compileTemplate(template, data);
 
@@ -57,19 +52,12 @@ export class MailService {
   async sendForgotPasswordEmail(email: string, token: string) {
     const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
 
-    return this.sendMail(
-      email,
-      'Reset Your Password',
-      'forgot-password',
-      { resetLink },
-    );
+    return this.sendMail(email, 'Reset Your Password', 'forgot-password', {
+      resetLink,
+    });
   }
 
-  async sendClientCredentials(
-    email: string,
-    name: string,
-    password: string,
-  ) {
+  async sendClientCredentials(email: string, name: string, password: string) {
     return this.sendMail(
       email,
       'Your Swarajya Login Credentials',

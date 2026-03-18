@@ -60,13 +60,19 @@ export class UserDocumentsController {
         },
         filename: (_req, file, cb) => {
           const base = (file.originalname || 'file').replace(/\.[^/.]+$/, '');
-          const ext = (file.originalname && file.originalname.split('.').pop()) || 'bin';
+          const ext =
+            (file.originalname && file.originalname.split('.').pop()) || 'bin';
           cb(null, `${randomUUID()}-${sanitizeFilename(base)}.${ext}`);
         },
       }),
       fileFilter: (_req, file, cb) => {
         if (!file.mimetype || !ALLOWED_MIMES.includes(file.mimetype)) {
-          return cb(new BadRequestException('Invalid file type. Allowed: PDF, images, Word docs.'), false);
+          return cb(
+            new BadRequestException(
+              'Invalid file type. Allowed: PDF, images, Word docs.',
+            ),
+            false,
+          );
         }
         cb(null, true);
       },

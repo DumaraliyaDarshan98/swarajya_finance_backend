@@ -14,4 +14,3 @@ export class UpdateSuperAdminSettingsDto {
   @IsBoolean()
   sendSmsNotifications?: boolean;
 }
-

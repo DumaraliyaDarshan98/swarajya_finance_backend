@@ -1,4 +1,11 @@
-import { IsOptional, IsString, IsUUID, IsBoolean, IsArray, ValidateNested } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  IsBoolean,
+  IsArray,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ModulePermissionDto } from './create-role.dto';
 

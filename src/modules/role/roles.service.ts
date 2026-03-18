@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Role } from './entities/role.entity';
 import { RolePermission } from './entities/role-permission.entity';
 import { AppModule } from '../module/entities/app-module.entity';
@@ -20,7 +20,8 @@ import { Role as RoleEnum } from '../../enum/role.enum';
 export class RolesService {
   constructor(
     @InjectRepository(Role) private roleRepo: Repository<Role>,
-    @InjectRepository(RolePermission) private rolePermissionRepo: Repository<RolePermission>,
+    @InjectRepository(RolePermission)
+    private rolePermissionRepo: Repository<RolePermission>,
     @InjectRepository(AppModule) private moduleRepo: Repository<AppModule>,
   ) {}
 
@@ -29,12 +30,19 @@ export class RolesService {
     user: { role: string; clientId?: string },
   ): Promise<APIResponseInterface<Role>> {
     if (dto.clientId) {
-      if (user.role !== RoleEnum.SUPER_ADMIN && user.clientId !== dto.clientId) {
-        throw new ForbiddenException('You can only create roles for your own client');
+      if (
+        user.role !== RoleEnum.SUPER_ADMIN &&
+        user.clientId !== dto.clientId
+      ) {
+        throw new ForbiddenException(
+          'You can only create roles for your own client',
+        );
       }
     } else {
       if (user.role !== RoleEnum.SUPER_ADMIN) {
-        throw new ForbiddenException('Only super admin can create internal roles');
+        throw new ForbiddenException(
+          'Only super admin can create internal roles',
+        );
       }
     }
 
@@ -53,7 +61,11 @@ export class RolesService {
       where: { id: role.id },
       relations: ['rolePermissions', 'rolePermissions.module'],
     });
-    return { code: HttpStatus.CREATED, message: 'Role created successfully', data: saved! };
+    return {
+      code: HttpStatus.CREATED,
+      message: 'Role created successfully',
+      data: saved!,
+    };
   }
 
   async findAll(
@@ -72,7 +84,8 @@ export class RolesService {
       .orderBy('role.createdAt', 'DESC');
 
     if (user.role === RoleEnum.SUPER_ADMIN) {
-      if (query.clientId) qb.andWhere('role.client_id = :clientId', { clientId: query.clientId });
+      if (query.clientId)
+        qb.andWhere('role.client_id = :clientId', { clientId: query.clientId });
     } else {
       qb.andWhere('role.client_id = :clientId', { clientId: user.clientId });
     }
@@ -95,10 +108,17 @@ export class RolesService {
       relations: ['rolePermissions', 'rolePermissions.module', 'client'],
     });
     if (!role) throw new NotFoundException('Role not found');
-    if (user.role !== RoleEnum.SUPER_ADMIN && role.client?.id !== user.clientId) {
+    if (
+      user.role !== RoleEnum.SUPER_ADMIN &&
+      role.client?.id !== user.clientId
+    ) {
       throw new ForbiddenException('You can only view roles of your client');
     }
-    return { code: HttpStatus.OK, message: 'Role fetched successfully', data: role };
+    return {
+      code: HttpStatus.OK,
+      message: 'Role fetched successfully',
+      data: role,
+    };
   }
 
   async update(
@@ -106,9 +126,15 @@ export class RolesService {
     dto: UpdateRoleDto,
     user: { role: string; clientId?: string },
   ): Promise<APIResponseInterface<Role>> {
-    const role = await this.roleRepo.findOne({ where: { id }, relations: ['client'] });
+    const role = await this.roleRepo.findOne({
+      where: { id },
+      relations: ['client'],
+    });
     if (!role) throw new NotFoundException('Role not found');
-    if (user.role !== RoleEnum.SUPER_ADMIN && role.client?.id !== user.clientId) {
+    if (
+      user.role !== RoleEnum.SUPER_ADMIN &&
+      role.client?.id !== user.clientId
+    ) {
       throw new ForbiddenException('You can only update roles of your client');
     }
 
@@ -126,25 +152,49 @@ export class RolesService {
       where: { id },
       relations: ['rolePermissions', 'rolePermissions.module'],
     });
-    return { code: HttpStatus.OK, message: 'Role updated successfully', data: updated! };
+    return {
+      code: HttpStatus.OK,
+      message: 'Role updated successfully',
+      data: updated!,
+    };
   }
 
-  async remove(id: string, user: { role: string; clientId?: string }): Promise<APIResponseInterface<null>> {
-    const role = await this.roleRepo.findOne({ where: { id }, relations: ['client'] });
+  async remove(
+    id: string,
+    user: { role: string; clientId?: string },
+  ): Promise<APIResponseInterface<null>> {
+    const role = await this.roleRepo.findOne({
+      where: { id },
+      relations: ['client'],
+    });
     if (!role) throw new NotFoundException('Role not found');
-    if (user.role !== RoleEnum.SUPER_ADMIN && role.client?.id !== user.clientId) {
+    if (
+      user.role !== RoleEnum.SUPER_ADMIN &&
+      role.client?.id !== user.clientId
+    ) {
       throw new ForbiddenException('You can only delete roles of your client');
     }
     await this.roleRepo.remove(role);
-    return { code: HttpStatus.OK, message: 'Role deleted successfully', data: null };
+    return {
+      code: HttpStatus.OK,
+      message: 'Role deleted successfully',
+      data: null,
+    };
   }
 
-  private async savePermissions(roleId: string, permissions: { moduleId: string; permissions: string[] }[]) {
+  private async savePermissions(
+    roleId: string,
+    permissions: { moduleId: string; permissions: string[] }[],
+  ) {
     const toInsert: Partial<RolePermission>[] = [];
     for (const p of permissions) {
       for (const perm of p.permissions) {
         if (Object.values(Permission).includes(perm as Permission)) {
-          toInsert.push({ roleId, moduleId: p.moduleId, permission: perm as Permission });
+          toInsert.push({
+            roleId,
+            moduleId: p.moduleId,
+            permission: perm as Permission,
+          });
         }
       }
     }
@@ -155,19 +205,59 @@ export class RolesService {
 
   async getModules(): Promise<APIResponseInterface<AppModule[]>> {
     const list = await this.moduleRepo.find({ order: { sortOrder: 'ASC' } });
-    return { code: HttpStatus.OK, message: 'Modules fetched successfully', data: list };
+    return {
+      code: HttpStatus.OK,
+      message: 'Modules fetched successfully',
+      data: list,
+    };
   }
 
   async seedModulesIfEmpty(): Promise<void> {
-    const count = await this.moduleRepo.count();
-    if (count > 0) return;
     const defaults = [
-      { name: 'Client Management', code: 'CLIENT_MANAGEMENT', description: 'Manage clients', sortOrder: 1 },
-      { name: 'User Management', code: 'USER_MANAGEMENT', description: 'Manage users', sortOrder: 2 },
-      { name: 'Role Management', code: 'ROLE_MANAGEMENT', description: 'Manage roles and permissions', sortOrder: 3 },
-      { name: 'Settings', code: 'SETTINGS', description: 'Application settings', sortOrder: 4 },
-      { name: 'Internal User Management', code: 'INTERNAL_USER_MANAGEMENT', description: 'Manage internal/super-admin users', sortOrder: 5 },
+      {
+        name: 'Client Management',
+        code: 'CLIENT_MANAGEMENT',
+        description: 'Manage clients',
+        sortOrder: 1,
+      },
+      {
+        name: 'User Management',
+        code: 'USER_MANAGEMENT',
+        description: 'Manage users',
+        sortOrder: 2,
+      },
+      {
+        name: 'Role Management',
+        code: 'ROLE_MANAGEMENT',
+        description: 'Manage roles and permissions',
+        sortOrder: 3,
+      },
+      {
+        name: 'Settings',
+        code: 'SETTINGS',
+        description: 'Application settings',
+        sortOrder: 4,
+      },
+      {
+        name: 'Internal User Management',
+        code: 'INTERNAL_USER_MANAGEMENT',
+        description: 'Manage internal/super-admin users',
+        sortOrder: 5,
+      },
+      {
+        name: 'Verification',
+        code: 'VERIFICATION',
+        description: 'Manage verification requests and reports',
+        sortOrder: 6,
+      },
     ];
-    await this.moduleRepo.insert(defaults);
+    const existing = await this.moduleRepo.find({
+      select: { id: true, code: true } as any,
+    });
+    const existingCodes = new Set(existing.map((m) => m.code));
+    const toInsert = defaults.filter((m) => !existingCodes.has(m.code));
+    if (toInsert.length) {
+      await this.moduleRepo.insert(toInsert);
+    }
   }
 }

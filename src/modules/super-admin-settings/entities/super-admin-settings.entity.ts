@@ -32,4 +32,3 @@ export class SuperAdminSettings {
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }
-
