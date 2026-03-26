@@ -26,6 +26,7 @@ const SUPER_ADMIN_FULL_NAME = 'Super Admin';
 async function run() {
   const ormConfig: any = {
     type: process.env.DB_TYPE || 'mysql',
+    connectorPackage: 'mysql2',
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '3306', 10),
     username: process.env.DB_USERNAME || 'root',
@@ -34,6 +35,12 @@ async function run() {
     namingStrategy: new SnakeNamingStrategy(),
     synchronize: false,
     logging: false,
+    ssl:
+      process.env.DB_SSL === 'false'
+        ? undefined
+        : {
+            rejectUnauthorized: false,
+          },
     entities: [join(__dirname, '../src/modules/**/entities/*.entity.{ts,js}')],
   };
 
