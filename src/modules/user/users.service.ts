@@ -41,12 +41,18 @@ export class UsersService {
     return this.repo.save(user);
   }
 
+  private normalizeNullableString(value?: string | null): string | null {
+    if (value == null) return null;
+    const normalized = value.trim();
+    return normalized.length ? normalized : null;
+  }
+
   async findAll(
     query: ListUsersQueryDto,
     user: { role: string; clientId?: string },
   ): Promise<APIResponseInterface<Partial<User>[]>> {
     const page = Math.max(1, query.page ?? 1);
-    const limit = Math.min(100, Math.max(1, query.limit ?? 10));
+    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
     const skip = (page - 1) * limit;
 
     const qb = this.repo
@@ -60,14 +66,12 @@ export class UsersService {
         'user.customRoleId',
       ])
       .leftJoin('user.client', 'client')
+      .leftJoin('user.customRole', 'customRole')
       .addSelect(['client.id', 'client.companyName'])
+      .addSelect(['customRole.id', 'customRole.name'])
       .orderBy('user.createdAt', 'DESC');
 
-    if (user.role === Role.SUPER_ADMIN) {
-      qb.andWhere('user.role IN (:...roles)', {
-        roles: [Role.SUPER_ADMIN, Role.INTERNAL_USER],
-      });
-    } else {
+    if (user.role !== Role.SUPER_ADMIN) {
       qb.andWhere('client.id = :clientId', { clientId: user.clientId });
     }
 
@@ -75,6 +79,16 @@ export class UsersService {
       const term = `%${query.search.trim()}%`;
       qb.andWhere('(user.fullName LIKE :term OR user.email LIKE :term)', {
         term,
+      });
+    }
+
+    if (query.role) {
+      qb.andWhere('user.role = :role', { role: query.role });
+    }
+
+    if (query.customRoleId) {
+      qb.andWhere('user.customRoleId = :customRoleId', {
+        customRoleId: query.customRoleId,
       });
     }
 
@@ -107,7 +121,8 @@ export class UsersService {
       fullName: dto.fullName,
       email: dto.email,
       password: hashed,
-      role: Role.INTERNAL_USER,
+      role: dto.role ?? Role.INTERNAL_USER,
+      customRoleId: dto.customRoleId ?? null,
       employeeType: dto.employeeType ?? null,
       mobileNumber: dto.mobileNumber ?? null,
       alternateNumber: dto.alternateNumber ?? null,
@@ -120,16 +135,18 @@ export class UsersService {
       state: dto.state ?? null,
       city: dto.city ?? null,
       pincode: dto.pincode ?? null,
-      resumeUrl: dto.resumeUrl ?? null,
-      panUrl: dto.panUrl ?? null,
-      addressProofUrl: dto.addressProofUrl ?? null,
-      cancelledChequeUrl: dto.cancelledChequeUrl ?? null,
-      cancelledChequeUrl2: dto.cancelledChequeUrl2 ?? null,
-      offerLetterUrl: dto.offerLetterUrl ?? null,
-      marksheet12Url: dto.marksheet12Url ?? null,
-      graduationMarksheetUrl: dto.graduationMarksheetUrl ?? null,
-      postGraduateCertUrl: dto.postGraduateCertUrl ?? null,
-      additionalCertUrl: dto.additionalCertUrl ?? null,
+      resumeUrl: this.normalizeNullableString(dto.resumeUrl),
+      panUrl: this.normalizeNullableString(dto.panUrl),
+      addressProofUrl: this.normalizeNullableString(dto.addressProofUrl),
+      cancelledChequeUrl: this.normalizeNullableString(dto.cancelledChequeUrl),
+      cancelledChequeUrl2: this.normalizeNullableString(dto.cancelledChequeUrl2),
+      offerLetterUrl: this.normalizeNullableString(dto.offerLetterUrl),
+      marksheet12Url: this.normalizeNullableString(dto.marksheet12Url),
+      graduationMarksheetUrl: this.normalizeNullableString(
+        dto.graduationMarksheetUrl,
+      ),
+      postGraduateCertUrl: this.normalizeNullableString(dto.postGraduateCertUrl),
+      additionalCertUrl: this.normalizeNullableString(dto.additionalCertUrl),
     });
     const saved = await this.repo.save(user);
     const { password: _, resetToken, resetTokenExpiry, ...safe } = saved;
@@ -178,9 +195,7 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (reqUser.role === Role.SUPER_ADMIN) {
-      if (user.role !== Role.SUPER_ADMIN && user.role !== Role.INTERNAL_USER) {
-        throw new ForbiddenException('You can only view internal users');
-      }
+      // Super admin can view all users.
     } else if (reqUser.role === Role.CLIENT_ADMIN) {
       if (!user.client || user.client.id !== reqUser.clientId) {
         throw new ForbiddenException('You can only view users of your client');
@@ -209,9 +224,7 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
     if (reqUser.role === Role.SUPER_ADMIN) {
-      if (user.role !== Role.SUPER_ADMIN && user.role !== Role.INTERNAL_USER) {
-        throw new ForbiddenException('You can only update internal users');
-      }
+      // Super admin can update all users.
     } else if (reqUser.role === Role.CLIENT_ADMIN) {
       if (!user.client || user.client.id !== reqUser.clientId) {
         throw new ForbiddenException(
@@ -222,6 +235,8 @@ export class UsersService {
       throw new ForbiddenException('Access denied');
     }
     if (dto.fullName != null) user.fullName = dto.fullName;
+    if (dto.role != null) user.role = dto.role;
+    if (dto.customRoleId != null) user.customRoleId = dto.customRoleId;
     if (dto.employeeType != null) user.employeeType = dto.employeeType;
     if (dto.mobileNumber != null) user.mobileNumber = dto.mobileNumber;
     if (dto.alternateNumber != null) user.alternateNumber = dto.alternateNumber;
@@ -235,21 +250,35 @@ export class UsersService {
     if (dto.state != null) user.state = dto.state;
     if (dto.city != null) user.city = dto.city;
     if (dto.pincode != null) user.pincode = dto.pincode;
-    if (dto.resumeUrl != null) user.resumeUrl = dto.resumeUrl;
-    if (dto.panUrl != null) user.panUrl = dto.panUrl;
-    if (dto.addressProofUrl != null) user.addressProofUrl = dto.addressProofUrl;
+    if (dto.resumeUrl != null)
+      user.resumeUrl = this.normalizeNullableString(dto.resumeUrl);
+    if (dto.panUrl != null) user.panUrl = this.normalizeNullableString(dto.panUrl);
+    if (dto.addressProofUrl != null)
+      user.addressProofUrl = this.normalizeNullableString(dto.addressProofUrl);
     if (dto.cancelledChequeUrl != null)
-      user.cancelledChequeUrl = dto.cancelledChequeUrl;
+      user.cancelledChequeUrl = this.normalizeNullableString(
+        dto.cancelledChequeUrl,
+      );
     if (dto.cancelledChequeUrl2 != null)
-      user.cancelledChequeUrl2 = dto.cancelledChequeUrl2;
-    if (dto.offerLetterUrl != null) user.offerLetterUrl = dto.offerLetterUrl;
-    if (dto.marksheet12Url != null) user.marksheet12Url = dto.marksheet12Url;
+      user.cancelledChequeUrl2 = this.normalizeNullableString(
+        dto.cancelledChequeUrl2,
+      );
+    if (dto.offerLetterUrl != null)
+      user.offerLetterUrl = this.normalizeNullableString(dto.offerLetterUrl);
+    if (dto.marksheet12Url != null)
+      user.marksheet12Url = this.normalizeNullableString(dto.marksheet12Url);
     if (dto.graduationMarksheetUrl != null)
-      user.graduationMarksheetUrl = dto.graduationMarksheetUrl;
+      user.graduationMarksheetUrl = this.normalizeNullableString(
+        dto.graduationMarksheetUrl,
+      );
     if (dto.postGraduateCertUrl != null)
-      user.postGraduateCertUrl = dto.postGraduateCertUrl;
+      user.postGraduateCertUrl = this.normalizeNullableString(
+        dto.postGraduateCertUrl,
+      );
     if (dto.additionalCertUrl != null)
-      user.additionalCertUrl = dto.additionalCertUrl;
+      user.additionalCertUrl = this.normalizeNullableString(
+        dto.additionalCertUrl,
+      );
     const saved = await this.repo.save(user);
     const { password, resetToken, resetTokenExpiry, ...safe } = saved;
     return {

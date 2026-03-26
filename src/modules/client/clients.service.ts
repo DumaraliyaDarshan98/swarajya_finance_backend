@@ -27,6 +27,18 @@ export class ClientsService {
     private mailService: MailService,
   ) {}
 
+  private normalizeOptionalString(value?: string | null): string | undefined {
+    if (value == null) return undefined;
+    const normalized = value.trim();
+    return normalized.length ? normalized : undefined;
+  }
+
+  private normalizeNullableForUpdate(value?: string | null): string | null {
+    if (value == null) return null;
+    const normalized = value.trim();
+    return normalized.length ? normalized : null;
+  }
+
   async createClient(dto: CreateClientDto): Promise<APIResponseInterface<any>> {
     const existing = await this.clientRepo.findOne({
       where: { email: dto.email },
@@ -35,7 +47,7 @@ export class ClientsService {
       throw new ConflictException('A client with this email already exists');
     }
 
-    const client = await this.clientRepo.save({
+    const clientEntity = this.clientRepo.create({
       companyName: dto.bankVendorName,
       email: dto.email,
       contactPerson: dto.bankVendorName,
@@ -55,30 +67,38 @@ export class ClientsService {
       ifscCode: dto.ifscCode,
       branchName: dto.branchName,
       panNumber: dto.panNumber,
-      panDocumentUrl: dto.panDocumentUrl,
+      panDocumentUrl: this.normalizeOptionalString(dto.panDocumentUrl),
       gstNumber: dto.gstNumber,
-      gstDocumentUrl: dto.gstDocumentUrl,
-      addressProofUrl: dto.addressProofUrl,
-      cancelledChequeUrl: dto.cancelledChequeUrl,
-      taxApprovalUrl: dto.taxApprovalUrl,
-      agreementDocumentUrl: dto.agreementDocumentUrl,
-      attachment1Url: dto.attachment1Url,
-      attachment2Url: dto.attachment2Url,
-      dsaTrainingAcknowledgeUrl: dto.dsaTrainingAcknowledgeUrl,
-      approvedAttachmentUrl: dto.approvedAttachmentUrl,
-      dueDiligenceDocumentUrl: dto.dueDiligenceDocumentUrl,
+      gstDocumentUrl: this.normalizeOptionalString(dto.gstDocumentUrl),
+      addressProofUrl: this.normalizeOptionalString(dto.addressProofUrl),
+      cancelledChequeUrl: this.normalizeOptionalString(dto.cancelledChequeUrl),
+      taxApprovalUrl: this.normalizeOptionalString(dto.taxApprovalUrl),
+      agreementDocumentUrl: this.normalizeOptionalString(dto.agreementDocumentUrl),
+      attachment1Url: this.normalizeOptionalString(dto.attachment1Url),
+      attachment2Url: this.normalizeOptionalString(dto.attachment2Url),
+      dsaTrainingAcknowledgeUrl: this.normalizeOptionalString(
+        dto.dsaTrainingAcknowledgeUrl,
+      ),
+      approvedAttachmentUrl: this.normalizeOptionalString(
+        dto.approvedAttachmentUrl,
+      ),
+      dueDiligenceDocumentUrl: this.normalizeOptionalString(
+        dto.dueDiligenceDocumentUrl,
+      ),
     });
+    const client = await this.clientRepo.save(clientEntity);
 
     const password = Math.random().toString(36).slice(-8);
     const hashed = await bcrypt.hash(password, 10);
 
-    await this.userRepo.save({
+    const userEntity = this.userRepo.create({
       fullName: dto.bankVendorName,
       email: dto.email,
       password: hashed,
       role: Role.CLIENT_ADMIN,
       client,
     });
+    await this.userRepo.save(userEntity);
 
     await this.mailService.sendClientCredentials(
       dto.email,
@@ -183,6 +203,61 @@ export class ClientsService {
     }
     if (dto.mobileNumber != null) {
       updatePayload.phone = dto.mobileNumber;
+    }
+    if (dto.panDocumentUrl !== undefined) {
+      updatePayload.panDocumentUrl = this.normalizeNullableForUpdate(
+        dto.panDocumentUrl,
+      );
+    }
+    if (dto.gstDocumentUrl !== undefined) {
+      updatePayload.gstDocumentUrl = this.normalizeNullableForUpdate(
+        dto.gstDocumentUrl,
+      );
+    }
+    if (dto.addressProofUrl !== undefined) {
+      updatePayload.addressProofUrl = this.normalizeNullableForUpdate(
+        dto.addressProofUrl,
+      );
+    }
+    if (dto.cancelledChequeUrl !== undefined) {
+      updatePayload.cancelledChequeUrl = this.normalizeNullableForUpdate(
+        dto.cancelledChequeUrl,
+      );
+    }
+    if (dto.taxApprovalUrl !== undefined) {
+      updatePayload.taxApprovalUrl = this.normalizeNullableForUpdate(
+        dto.taxApprovalUrl,
+      );
+    }
+    if (dto.agreementDocumentUrl !== undefined) {
+      updatePayload.agreementDocumentUrl = this.normalizeNullableForUpdate(
+        dto.agreementDocumentUrl,
+      );
+    }
+    if (dto.attachment1Url !== undefined) {
+      updatePayload.attachment1Url = this.normalizeNullableForUpdate(
+        dto.attachment1Url,
+      );
+    }
+    if (dto.attachment2Url !== undefined) {
+      updatePayload.attachment2Url = this.normalizeNullableForUpdate(
+        dto.attachment2Url,
+      );
+    }
+    if (dto.dsaTrainingAcknowledgeUrl !== undefined) {
+      updatePayload.dsaTrainingAcknowledgeUrl = this.normalizeNullableForUpdate(
+        dto.dsaTrainingAcknowledgeUrl,
+      );
+    }
+    if (dto.approvedAttachmentUrl !== undefined) {
+      updatePayload.approvedAttachmentUrl = this.normalizeNullableForUpdate(
+        dto.approvedAttachmentUrl,
+      );
+    }
+    if (dto.dueDiligenceDocumentUrl !== undefined) {
+      updatePayload.dueDiligenceDocumentUrl = this.normalizeNullableForUpdate(
+        dto.dueDiligenceDocumentUrl,
+      );
     }
     const filtered = Object.fromEntries(
       Object.entries(updatePayload).filter(([, v]) => v !== undefined),
