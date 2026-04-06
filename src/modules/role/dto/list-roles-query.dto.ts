@@ -1,4 +1,4 @@
-import { IsOptional, IsUUID, IsInt, Min, Max } from 'class-validator';
+import { IsOptional, IsUUID, IsInt, Min, Max, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListRolesQueryDto {
@@ -18,4 +18,9 @@ export class ListRolesQueryDto {
   @IsOptional()
   @IsUUID()
   clientId?: string; // for super admin: filter by client; for client admin: only their client
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  internalOnly?: boolean;
 }

@@ -1,4 +1,13 @@
-import { IsString, IsOptional, MinLength, MaxLength } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  MinLength,
+  MaxLength,
+  IsEnum,
+  IsUUID,
+  Matches,
+} from 'class-validator';
+import { Role } from '../../../enum/role.enum';
 
 export class UpdateInternalUserDto {
   @IsOptional()
@@ -8,18 +17,26 @@ export class UpdateInternalUserDto {
   fullName?: string;
 
   @IsOptional()
+  @IsEnum(Role)
+  role?: Role;
+
+  @IsOptional()
+  @IsUUID()
+  customRoleId?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(100)
   employeeType?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(20)
+  @Matches(/^[0-9]{10}$/, { message: 'Mobile number must be 10 digits' })
   mobileNumber?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(20)
+  @Matches(/^[0-9]{10}$/, { message: 'Alternate number must be 10 digits' })
   alternateNumber?: string;
 
   @IsOptional()

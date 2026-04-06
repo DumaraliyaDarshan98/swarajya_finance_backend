@@ -4,7 +4,11 @@ import {
   IsOptional,
   MinLength,
   MaxLength,
+  IsEnum,
+  IsUUID,
+  Matches,
 } from 'class-validator';
+import { Role } from '../../../enum/role.enum';
 
 export class CreateInternalUserDto {
   @IsString()
@@ -14,6 +18,14 @@ export class CreateInternalUserDto {
 
   @IsEmail()
   email: string;
+
+  @IsOptional()
+  @IsEnum(Role)
+  role?: Role;
+
+  @IsOptional()
+  @IsUUID()
+  customRoleId?: string;
 
   @IsOptional()
   @IsString()
@@ -27,12 +39,12 @@ export class CreateInternalUserDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(20)
+  @Matches(/^[0-9]{10}$/, { message: 'Mobile number must be 10 digits' })
   mobileNumber?: string;
 
   @IsOptional()
   @IsString()
-  @MaxLength(20)
+  @Matches(/^[0-9]{10}$/, { message: 'Alternate number must be 10 digits' })
   alternateNumber?: string;
 
   @IsOptional()

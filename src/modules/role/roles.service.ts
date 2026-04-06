@@ -80,12 +80,15 @@ export class RolesService {
       .createQueryBuilder('role')
       .leftJoinAndSelect('role.rolePermissions', 'rp')
       .leftJoinAndSelect('rp.module', 'm')
-      .leftJoinAndSelect('role.client', 'client')
+      .leftJoinAndSelect('role.client', 'client') 
       .orderBy('role.createdAt', 'DESC');
 
     if (user.role === RoleEnum.SUPER_ADMIN) {
-      if (query.clientId)
+      if (query.internalOnly) {
+        qb.andWhere('role.client_id IS NULL');
+      } else if (query.clientId) {
         qb.andWhere('role.client_id = :clientId', { clientId: query.clientId });
+      }
     } else {
       qb.andWhere('role.client_id = :clientId', { clientId: user.clientId });
     }
