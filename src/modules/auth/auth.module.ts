@@ -5,11 +5,14 @@ import { AuthController } from './auth.controller';
 import { UserModule } from '../user/user.module';
 import { JwtStrategy } from '../../common/jwt.strategy';
 import { MailModule } from '../mail/mail.module';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { FieldAssistant } from '../field-assistance/entities/field-assistant.entity';
 
 @Module({
   imports: [
     UserModule,
     MailModule,
+    TypeOrmModule.forFeature([FieldAssistant]),
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '1d' },

@@ -276,6 +276,19 @@ export class UpsertFieldAssistantDto {
   @Type(() => ContactDto)
   personalContact?: ContactDto;
 
+  // Field Agent Login (used by /auth/login)
+  @IsOptional()
+  @IsEmail()
+  loginEmail?: string;
+
+  /**
+   * Plain password from UI. Backend stores bcrypt hash.
+   * Optional on edit (keep existing if not provided).
+   */
+  @IsOptional()
+  @IsString()
+  password?: string;
+
   // Emergency
   @IsArray()
   @ValidateNested({ each: true })

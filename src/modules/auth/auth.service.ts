@@ -12,6 +12,9 @@ import { UsersService } from '../user/users.service';
 import { Role } from '../../enum/role.enum';
 import { MailService } from '../mail/mail.service';
 import { APIResponseInterface } from '../../interface/response.interface';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { FieldAssistant } from '../field-assistance/entities/field-assistant.entity';
 
 export type PermissionEntry = { moduleCode: string; permissions: string[] };
 
@@ -21,6 +24,8 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private mailService: MailService,
+    @InjectRepository(FieldAssistant)
+    private fieldAssistantRepo: Repository<FieldAssistant>,
   ) {}
 
   async createSuperAdmin(dto: any): Promise<APIResponseInterface<any>> {
@@ -49,29 +54,63 @@ export class AuthService {
   }
 
   async login(dto: any): Promise<APIResponseInterface<any>> {
+    // NOTE: Avoid heavy console logging in auth flow (can slow down responses in dev tools).
+    // 1) Try normal users table
     const user = await this.usersService.findByEmail(dto.email);
-    if (!user || !(await bcrypt.compare(dto.password, user.password))) {
+    if (user) {
+      if (!(await bcrypt.compare(dto.password, user.password))) {
+        throw new UnauthorizedException('Invalid email or password');
+      }
+
+      const permissions = this.getUserPermissions(user);
+      const accessToken = this.jwtService.sign({
+        sub: user.id,
+        role: user.role,
+        clientId: user.client?.id,
+      });
+
+      const { password, resetToken, resetTokenExpiry, ...userSafe } = user as any;
+      return {
+        code: HttpStatus.OK,
+        message: 'Login successful',
+        data: { accessToken, user: userSafe, permissions },
+      };
+    }
+
+    // 2) Try Field Assistant login (Field Agent)
+    const fa = await this.fieldAssistantRepo
+      .createQueryBuilder('fa')
+      .where('fa.login_email = :email', { email: dto.email })
+      .orWhere('fa.personal_email_id = :email', { email: dto.email })
+      .orWhere('fa.office_email_id = :email', { email: dto.email })
+      .getOne();
+
+    if (!fa || !fa.password) {
+      throw new UnauthorizedException('Invalid email or password');
+    }
+    if (!(await bcrypt.compare(dto.password, fa.password))) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    const permissions = this.getUserPermissions(user);
-
+    const permissions = this.getUserPermissions({ role: Role.FIELD_AGENT });
     const accessToken = this.jwtService.sign({
-      sub: user.id,
-      role: user.role,
-      clientId: user.client?.id,
+      sub: fa.id,
+      role: Role.FIELD_AGENT,
+      fieldAssistantId: fa.id,
     });
 
-    const { password, resetToken, resetTokenExpiry, ...userSafe } = user;
+    const safeFa = {
+      id: fa.id,
+      fullName: fa.fullName ?? [fa.firstName, fa.middleName, fa.lastName].filter(Boolean).join(' '),
+      email: fa.loginEmail ?? fa.personalEmailId ?? fa.officeEmailId ?? dto.email,
+      role: Role.FIELD_AGENT,
+      fieldAgentId: fa.fieldAgentId,
+    };
 
     return {
       code: HttpStatus.OK,
       message: 'Login successful',
-      data: {
-        accessToken,
-        user: userSafe,
-        permissions,
-      },
+      data: { accessToken, user: safeFa, permissions },
     };
   }
 
@@ -145,6 +184,12 @@ export class AuthService {
           moduleCode: 'VERIFICATION',
           permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
         },
+      ];
+    }
+    if (user.role === Role.FIELD_AGENT) {
+      return [
+        { moduleCode: 'PHYSICAL_VERIFICATION', permissions: ['VIEW', 'LIST', 'EDIT'] },
+        { moduleCode: 'WALLET', permissions: ['VIEW', 'LIST'] },
       ];
     }
     return [];

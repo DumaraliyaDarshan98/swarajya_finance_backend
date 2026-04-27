@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, IsInt, Min, Max } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsInt, Min, Max, IsBoolean } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListVerificationRequestsQueryDto {
@@ -30,4 +30,9 @@ export class ListVerificationRequestsQueryDto {
   @IsOptional()
   @IsIn(['ASC', 'DESC'])
   sortDir?: 'ASC' | 'DESC' = 'DESC';
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  physicalOnly?: boolean;
 }

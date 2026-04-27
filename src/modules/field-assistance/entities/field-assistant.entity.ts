@@ -117,6 +117,25 @@ export class FieldAssistant {
   @Index()
   personalEmailId: string | null;
 
+  /**
+   * Field agent login email (used by the same /auth/login API).
+   * Kept separate from office/personal emails to avoid ambiguity.
+   */
+  @Column({
+    name: 'login_email',
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+  })
+  @Index({ unique: true })
+  loginEmail: string | null;
+
+  /**
+   * Hashed password for field agent login (bcrypt).
+   */
+  @Column({ name: 'password', type: 'varchar', length: 255, nullable: true })
+  password: string | null;
+
   // ===== Additional Fields =====
   @Column({
     name: 'part_time_or_full_time',

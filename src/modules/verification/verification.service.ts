@@ -14,6 +14,9 @@ import { UpsertDocumentVerificationDto } from './dto/upsert-document.dto';
 import { UpsertPhysicalVerificationDto } from './dto/upsert-physical.dto';
 import { Role } from '../../enum/role.enum';
 import type { VerificationStatus } from './entities/verification-request.entity';
+import { PhysicalVerificationService } from '../physical-verification/physical-verification.service';
+import { PhysicalVerificationRequest } from '../physical-verification/entities/physical-verification-request.entity';
+import { PhysicalVerificationStatusHistory } from '../physical-verification/entities/physical-verification-status-history.entity';
 
 type AuthedUser = { role: Role; clientId?: string };
 type DocKey =
@@ -32,6 +35,11 @@ export class VerificationService {
   constructor(
     @InjectRepository(VerificationRequest)
     private repo: Repository<VerificationRequest>,
+    private readonly physicalService: PhysicalVerificationService,
+    @InjectRepository(PhysicalVerificationRequest)
+    private readonly physicalReqRepo: Repository<PhysicalVerificationRequest>,
+    @InjectRepository(PhysicalVerificationStatusHistory)
+    private readonly physicalHistRepo: Repository<PhysicalVerificationStatusHistory>,
   ) {}
 
   async list(
@@ -64,11 +72,38 @@ export class VerificationService {
       qb.andWhere('vr.status = :status', { status: query.status });
     }
 
+    if (query.physicalOnly) {
+      qb.andWhere('vr.do_physical_verification = :p', { p: true });
+    }
+
     const [list, total] = await qb.getManyAndCount();
+
+    // Attach physical request status summary (for client tracking UI).
+    const ids = list.map((x) => x.id);
+    const physicalRows = ids.length
+      ? await this.physicalReqRepo.find({
+          where: ids.map((id) => ({ verificationRequestId: id })) as any,
+        })
+      : [];
+    const byVrId = new Map(physicalRows.map((r) => [r.verificationRequestId, r]));
+
+    const enriched = list.map((v) => {
+      const pr = byVrId.get(v.id);
+      return Object.assign(v, {
+        physicalRequest: pr
+          ? {
+              id: pr.id,
+              status: pr.status,
+              assignedFieldAssistantId: pr.assignedFieldAssistantId,
+              updatedAt: pr.updatedAt,
+            }
+          : null,
+      });
+    });
     return {
       code: HttpStatus.OK,
       message: 'Verification requests fetched successfully',
-      data: list,
+      data: enriched as any,
       pagination: { total, page, pagePerRecord: limit },
     };
   }
@@ -155,10 +190,36 @@ export class VerificationService {
     if (user.role !== Role.SUPER_ADMIN && vr.clientId !== user.clientId) {
       throw new ForbiddenException('You can only view your client records');
     }
+    const pr = await this.physicalReqRepo.findOne({
+      where: { verificationRequestId: vr.id },
+    });
+
+    const history = pr
+      ? await this.physicalHistRepo.find({
+          where: { requestId: pr.id },
+          order: { createdAt: 'ASC' as any },
+        })
+      : [];
     return {
       code: HttpStatus.OK,
       message: 'Verification request fetched',
-      data: vr,
+      data: Object.assign(vr, {
+        physicalRequest: pr
+          ? {
+              id: pr.id,
+              status: pr.status,
+              assignedFieldAssistantId: pr.assignedFieldAssistantId,
+              updatedAt: pr.updatedAt,
+            }
+          : null,
+        physicalRequestHistory: history.map((h) => ({
+          fromStatus: h.fromStatus,
+          toStatus: h.toStatus,
+          comment: h.comment,
+          changedByRole: h.changedByRole,
+          createdAt: h.createdAt,
+        })),
+      }) as any,
     };
   }
 
@@ -215,6 +276,14 @@ export class VerificationService {
       vr.documentPayload = dto.documentPayload ?? null;
     if (dto.doPhysicalVerification !== undefined) {
       vr.doPhysicalVerification = !!dto.doPhysicalVerification;
+    }
+
+    // When physical verification is requested, ensure a physical request exists.
+    if (vr.doPhysicalVerification) {
+      await this.physicalService.ensureForVerification({
+        verificationRequestId: vr.id,
+        clientId: vr.clientId,
+      });
     }
 
     vr.status = this.computeStatus(vr);
