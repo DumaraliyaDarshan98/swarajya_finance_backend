@@ -15,6 +15,7 @@ import { RoleModule } from './modules/role/role.module';
 import { SuperAdminSettingsModule } from './modules/super-admin-settings/super-admin-settings.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { VerificationModule } from './modules/verification/verification.module';
+import { FieldAssistanceModule } from './modules/field-assistance/field-assistance.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { VerificationModule } from './modules/verification/verification.module';
     SuperAdminSettingsModule,
     NotificationModule,
     VerificationModule,
+    FieldAssistanceModule,
   ],
   controllers: [AppController],
   providers: [
