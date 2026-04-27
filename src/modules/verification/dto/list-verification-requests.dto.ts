@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsInt, Min, Max } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsInt, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListVerificationRequestsQueryDto {
@@ -18,4 +18,16 @@ export class ListVerificationRequestsQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsIn(['DRAFT', 'IN_PROGRESS', 'REPORT_GENERATED', 'FAILED'])
+  status?: 'DRAFT' | 'IN_PROGRESS' | 'REPORT_GENERATED' | 'FAILED';
+
+  @IsOptional()
+  @IsIn(['createdAt', 'updatedAt'])
+  sortBy?: 'createdAt' | 'updatedAt' = 'updatedAt';
+
+  @IsOptional()
+  @IsIn(['ASC', 'DESC'])
+  sortDir?: 'ASC' | 'DESC' = 'DESC';
 }
