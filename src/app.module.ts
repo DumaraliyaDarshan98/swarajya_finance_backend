@@ -16,6 +16,7 @@ import { SuperAdminSettingsModule } from './modules/super-admin-settings/super-a
 import { NotificationModule } from './modules/notification/notification.module';
 import { VerificationModule } from './modules/verification/verification.module';
 import { FieldAssistanceModule } from './modules/field-assistance/field-assistance.module';
+import { ScrappingModule } from './modules/scrapping/scrapping.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { FieldAssistanceModule } from './modules/field-assistance/field-assistan
     NotificationModule,
     VerificationModule,
     FieldAssistanceModule,
+    ScrappingModule,
   ],
   controllers: [AppController],
   providers: [
