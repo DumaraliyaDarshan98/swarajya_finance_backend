@@ -108,6 +108,58 @@ export class UsersService {
     };
   }
 
+  async createFieldAgentUser(params: {
+    fullName: string;
+    email: string;
+  }): Promise<{ user: User; plainPassword: string }> {
+    const email = params.email.trim().toLowerCase();
+    const existing = await this.repo.findOne({ where: { email } });
+    if (existing) {
+      throw new ConflictException('User with this email already exists');
+    }
+
+    const plainPassword = Math.random().toString(36).slice(-8);
+    const hashed = await bcrypt.hash(plainPassword, 10);
+    const user = this.repo.create({
+      fullName: params.fullName.trim(),
+      email,
+      password: hashed,
+      role: Role.FIELD_AGENT,
+      customRoleId: null,
+    });
+    const saved = await this.repo.save(user);
+    return { user: saved, plainPassword };
+  }
+
+  async deleteById(id: string): Promise<void> {
+    const user = await this.repo.findOne({ where: { id } });
+    if (!user) return;
+    await this.repo.delete(id);
+  }
+
+  async updateFieldAgentLogin(
+    userId: string,
+    params: { fullName?: string; email?: string },
+  ): Promise<void> {
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user || user.role !== Role.FIELD_AGENT) return;
+
+    if (params.fullName?.trim()) {
+      user.fullName = params.fullName.trim();
+    }
+    if (params.email?.trim()) {
+      const email = params.email.trim().toLowerCase();
+      if (email !== user.email) {
+        const existing = await this.repo.findOne({ where: { email } });
+        if (existing && existing.id !== userId) {
+          throw new ConflictException('User with this email already exists');
+        }
+        user.email = email;
+      }
+    }
+    await this.repo.save(user);
+  }
+
   async createInternalUser(
     dto: CreateInternalUserDto,
   ): Promise<APIResponseInterface<Partial<User>>> {

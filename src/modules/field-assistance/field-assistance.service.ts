@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   HttpStatus,
   Injectable,
   NotFoundException,
@@ -19,6 +18,8 @@ import { FieldAssistantFamilyMember } from './entities/field-assistant-family-me
 import { FieldAssistantIdentification } from './entities/field-assistant-identification.entity';
 import { FieldAssistantPreviousEmployment } from './entities/field-assistant-previous-employment.entity';
 import { FieldAssistantIdSequence } from './entities/field-assistant-id-sequence.entity';
+import { UsersService } from '../user/users.service';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class FieldAssistanceService {
@@ -27,6 +28,8 @@ export class FieldAssistanceService {
     private readonly repo: Repository<FieldAssistant>,
     @InjectRepository(FieldAssistantIdSequence)
     private readonly seqRepo: Repository<FieldAssistantIdSequence>,
+    private readonly usersService: UsersService,
+    private readonly mailService: MailService,
   ) {}
 
   private calculateAge(dob: string): number | null {
@@ -61,6 +64,63 @@ export class FieldAssistanceService {
 
   private formatFieldAgentId(seq: number): string {
     return `SWFAID-${String(seq).padStart(3, '0')}`;
+  }
+
+  private resolveLoginEmail(dto: UpsertFieldAssistantDto): string | null {
+    const office = dto.officeContact?.emailId?.trim();
+    const personal = dto.personalContact?.emailId?.trim();
+    return office || personal || null;
+  }
+
+  async findByUserId(userId: string): Promise<FieldAssistant | null> {
+    return this.repo.findOne({ where: { userId } });
+  }
+
+  private async provisionLoginAccount(
+    saved: FieldAssistant,
+    dto: UpsertFieldAssistantDto,
+  ): Promise<FieldAssistant> {
+    const loginEmail = this.resolveLoginEmail(dto);
+    if (!loginEmail) {
+      throw new BadRequestException(
+        'Office or personal email is required to create a field agent login account',
+      );
+    }
+
+    const { user, plainPassword } = await this.usersService.createFieldAgentUser({
+      fullName: saved.fullName || `${saved.firstName} ${saved.lastName}`.trim(),
+      email: loginEmail,
+    });
+
+    saved.userId = user.id;
+    const linked = await this.repo.save(saved);
+
+    try {
+      await this.mailService.sendFieldAgentCredentials(
+        loginEmail,
+        linked.fullName || linked.firstName,
+        linked.fieldAgentId || '',
+        plainPassword,
+      );
+    } catch {
+      // Profile and user are created; mail failure should not roll back.
+    }
+
+    return linked;
+  }
+
+  private async syncLoginAccount(
+    fa: FieldAssistant,
+    dto: UpsertFieldAssistantDto,
+  ): Promise<void> {
+    if (!fa.userId) return;
+    const loginEmail = this.resolveLoginEmail(dto);
+    await this.usersService.updateFieldAgentLogin(fa.userId, {
+      fullName:
+        dto.fullName?.trim() ||
+        [dto.firstName, dto.middleName, dto.lastName].filter(Boolean).join(' '),
+      email: loginEmail || undefined,
+    });
   }
 
   /**
@@ -207,10 +267,12 @@ export class FieldAssistanceService {
     });
 
     const saved = await this.repo.save(entity);
+    const withLogin = await this.provisionLoginAccount(saved, dto);
     return {
       code: HttpStatus.CREATED,
-      message: 'Field assistant created successfully',
-      data: saved,
+      message:
+        'Field assistant created successfully. Login credentials have been emailed.',
+      data: withLogin,
     };
   }
 
@@ -429,6 +491,7 @@ export class FieldAssistanceService {
     );
 
     const saved = await this.repo.save(fa);
+    await this.syncLoginAccount(saved, dto);
     return {
       code: HttpStatus.OK,
       message: 'Field assistant updated successfully',
@@ -442,6 +505,9 @@ export class FieldAssistanceService {
   async delete(id: string): Promise<APIResponseInterface<any>> {
     const fa = await this.repo.findOne({ where: { id } });
     if (!fa) throw new NotFoundException('Field assistant not found');
+    if (fa.userId) {
+      await this.usersService.deleteById(fa.userId);
+    }
     await this.repo.delete(id);
     return {
       code: HttpStatus.OK,

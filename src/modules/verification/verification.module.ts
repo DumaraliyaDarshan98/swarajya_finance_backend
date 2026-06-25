@@ -14,5 +14,6 @@ import { OcrService } from './ocr.service';
   ],
   controllers: [VerificationController, OcrController],
   providers: [VerificationService, OcrService],
+  exports: [OcrService],
 })
 export class VerificationModule {}

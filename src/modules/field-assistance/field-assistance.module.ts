@@ -11,6 +11,8 @@ import { FieldAssistantFamilyMember } from './entities/field-assistant-family-me
 import { FieldAssistantIdentification } from './entities/field-assistant-identification.entity';
 import { FieldAssistantPreviousEmployment } from './entities/field-assistant-previous-employment.entity';
 import { FieldAssistantIdSequence } from './entities/field-assistant-id-sequence.entity';
+import { UserModule } from '../user/user.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
@@ -25,9 +27,12 @@ import { FieldAssistantIdSequence } from './entities/field-assistant-id-sequence
       FieldAssistantPreviousEmployment,
       FieldAssistantIdSequence,
     ]),
+    UserModule,
+    MailModule,
   ],
   controllers: [FieldAssistanceController],
   providers: [FieldAssistanceService],
+  exports: [FieldAssistanceService],
 })
 export class FieldAssistanceModule {}
 

@@ -5,6 +5,7 @@ import { ScrappingService } from './scrapping.service';
 @Module({
   controllers: [ScrappingController],
   providers: [ScrappingService],
+  exports: [ScrappingService],
 })
 export class ScrappingModule {}
 

@@ -50,6 +50,11 @@ export class FieldAssistant {
   @Index()
   updatedBy: string | null;
 
+  /** Linked login user (role FIELD_AGENT) created on onboarding */
+  @Column({ name: 'user_id', type: 'uuid', nullable: true })
+  @Index({ unique: true })
+  userId: string | null;
+
   // ===== Personal Details =====
   @Column({ name: 'first_name', type: 'varchar', length: 100 })
   firstName: string;

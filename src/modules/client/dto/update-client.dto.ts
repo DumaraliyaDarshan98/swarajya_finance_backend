@@ -1,4 +1,6 @@
-import { IsEmail, IsOptional, IsString, Matches } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ClientSettingsDto } from './client-settings.dto';
 
 export class UpdateClientDto {
   @IsOptional()
@@ -117,4 +119,9 @@ export class UpdateClientDto {
   @IsOptional()
   @IsString()
   dueDiligenceDocumentUrl?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ClientSettingsDto)
+  setting?: ClientSettingsDto;
 }

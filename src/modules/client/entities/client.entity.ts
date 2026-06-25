@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../../user/entities/user.entity';
+import { ClientSettings } from '../interfaces/client-settings.interface';
 
 @Entity('clients')
 export class Client {
@@ -110,6 +111,9 @@ export class Client {
 
   @Column({ name: 'due_diligence_document_url', nullable: true })
   dueDiligenceDocumentUrl: string;
+
+  @Column({ type: 'json', nullable: true })
+  setting: ClientSettings | null;
 
   @OneToMany(() => User, (user) => user.client)
   users: User[];

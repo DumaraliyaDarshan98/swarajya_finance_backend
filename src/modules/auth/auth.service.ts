@@ -12,6 +12,7 @@ import { UsersService } from '../user/users.service';
 import { Role } from '../../enum/role.enum';
 import { MailService } from '../mail/mail.service';
 import { APIResponseInterface } from '../../interface/response.interface';
+import { FieldAssistanceService } from '../field-assistance/field-assistance.service';
 
 export type PermissionEntry = { moduleCode: string; permissions: string[] };
 
@@ -21,6 +22,7 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private mailService: MailService,
+    private fieldAssistanceService: FieldAssistanceService,
   ) {}
 
   async createSuperAdmin(dto: any): Promise<APIResponseInterface<any>> {
@@ -54,6 +56,17 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    let fieldAgentProfile: { fieldAgentId?: string | null } | null = null;
+    if (user.role === Role.FIELD_AGENT) {
+      const fa = await this.fieldAssistanceService.findByUserId(user.id);
+      if (!fa || fa.status !== 'Active') {
+        throw new UnauthorizedException(
+          'Field agent account is inactive or not found',
+        );
+      }
+      fieldAgentProfile = { fieldAgentId: fa.fieldAgentId };
+    }
+
     const permissions = this.getUserPermissions(user);
 
     const accessToken = this.jwtService.sign({
@@ -69,7 +82,7 @@ export class AuthService {
       message: 'Login successful',
       data: {
         accessToken,
-        user: userSafe,
+        user: { ...userSafe, ...fieldAgentProfile },
         permissions,
       },
     };
@@ -100,6 +113,10 @@ export class AuthService {
         },
         {
           moduleCode: 'VERIFICATION',
+          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
+        },
+        {
+          moduleCode: 'FIELD_AGENT',
           permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
         },
       ];
@@ -146,6 +163,9 @@ export class AuthService {
           permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
         },
       ];
+    }
+    if (user.role === Role.FIELD_AGENT) {
+      return [{ moduleCode: 'FIELD_AGENT', permissions: ['VIEW', 'LIST'] }];
     }
     return [];
   }
