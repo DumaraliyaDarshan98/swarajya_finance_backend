@@ -5,11 +5,13 @@ import { AuthController } from './auth.controller';
 import { UserModule } from '../user/user.module';
 import { JwtStrategy } from '../../common/jwt.strategy';
 import { MailModule } from '../mail/mail.module';
+import { FieldAssistanceModule } from '../field-assistance/field-assistance.module';
 
 @Module({
   imports: [
     UserModule,
     MailModule,
+    FieldAssistanceModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '1d' },

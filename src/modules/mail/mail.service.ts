@@ -65,4 +65,19 @@ export class MailService {
       { name, email, password },
     );
   }
+
+  async sendFieldAgentCredentials(
+    email: string,
+    name: string,
+    fieldAgentId: string,
+    password: string,
+  ) {
+    const loginUrl = `${process.env.FRONTEND_URL}/auth/login`;
+    return this.sendMail(
+      email,
+      'Your Swarajya Field Agent Login Credentials',
+      'field-agent-credentials',
+      { name, email, fieldAgentId, password, loginUrl },
+    );
+  }
 }

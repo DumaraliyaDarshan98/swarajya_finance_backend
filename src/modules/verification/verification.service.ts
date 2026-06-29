@@ -13,8 +13,19 @@ import { UpsertDigitalVerificationDto } from './dto/upsert-digital.dto';
 import { UpsertDocumentVerificationDto } from './dto/upsert-document.dto';
 import { UpsertPhysicalVerificationDto } from './dto/upsert-physical.dto';
 import { Role } from '../../enum/role.enum';
+import type { VerificationStatus } from './entities/verification-request.entity';
 
 type AuthedUser = { role: Role; clientId?: string };
+type DocKey =
+  | 'panCard'
+  | 'aadhaarCard'
+  | 'addressProof'
+  | 'joiningLetter'
+  | 'salarySlip'
+  | 'ownershipDeed'
+  | 'form16'
+  | 'accountStatement'
+  | 'passportPhoto';
 
 @Injectable()
 export class VerificationService {
@@ -33,7 +44,7 @@ export class VerificationService {
 
     const qb = this.repo
       .createQueryBuilder('vr')
-      .orderBy('vr.createdAt', 'DESC')
+      .orderBy(`vr.${query.sortBy ?? 'updatedAt'}`, (query.sortDir ?? 'DESC') as any)
       .skip(skip)
       .take(limit);
 
@@ -49,12 +60,60 @@ export class VerificationService {
       );
     }
 
+    if (query.status) {
+      qb.andWhere('vr.status = :status', { status: query.status });
+    }
+
     const [list, total] = await qb.getManyAndCount();
     return {
       code: HttpStatus.OK,
       message: 'Verification requests fetched successfully',
       data: list,
       pagination: { total, page, pagePerRecord: limit },
+    };
+  }
+
+  async stats(user: AuthedUser): Promise<
+    APIResponseInterface<{
+      total: number;
+      draft: number;
+      inProgress: number;
+      reportGenerated: number;
+      failed: number;
+    }>
+  > {
+    const baseQb = this.repo.createQueryBuilder('vr');
+    if (user.role !== Role.SUPER_ADMIN) {
+      baseQb.where('vr.client_id = :clientId', { clientId: user.clientId });
+    }
+
+    const total = await baseQb.getCount();
+
+    const rows = await this.repo
+      .createQueryBuilder('vr')
+      .select('vr.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .where(
+        user.role !== Role.SUPER_ADMIN ? 'vr.client_id = :clientId' : '1=1',
+        user.role !== Role.SUPER_ADMIN ? { clientId: user.clientId } : {},
+      )
+      .groupBy('vr.status')
+      .getRawMany<{ status: VerificationStatus; count: string }>();
+
+    const byStatus = new Map<string, number>(
+      rows.map((r) => [r.status, Number(r.count) || 0]),
+    );
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Verification request stats fetched successfully',
+      data: {
+        total,
+        draft: byStatus.get('DRAFT') ?? 0,
+        inProgress: byStatus.get('IN_PROGRESS') ?? 0,
+        reportGenerated: byStatus.get('REPORT_GENERATED') ?? 0,
+        failed: byStatus.get('FAILED') ?? 0,
+      },
     };
   }
 
@@ -75,7 +134,9 @@ export class VerificationService {
       panNumber: dto.panNumber ?? null,
       address: dto.address ?? null,
       doDocumentVerification: !!dto.doDocumentVerification,
-      status: 'DRAFT',
+      status: this.computeStatus({
+        doDocumentVerification: !!dto.doDocumentVerification,
+      }),
     });
     const saved = await this.repo.save(entity);
     return {
@@ -130,6 +191,7 @@ export class VerificationService {
       }
     }
 
+    vr.status = this.computeStatus(vr);
     const saved = await this.repo.save(vr);
     return {
       code: HttpStatus.OK,
@@ -155,6 +217,7 @@ export class VerificationService {
       vr.doPhysicalVerification = !!dto.doPhysicalVerification;
     }
 
+    vr.status = this.computeStatus(vr);
     const saved = await this.repo.save(vr);
     return {
       code: HttpStatus.OK,
@@ -176,6 +239,7 @@ export class VerificationService {
 
     if (dto.physicalPayload !== undefined)
       vr.physicalPayload = dto.physicalPayload ?? null;
+    vr.status = this.computeStatus(vr);
     const saved = await this.repo.save(vr);
     return {
       code: HttpStatus.OK,
@@ -300,5 +364,88 @@ export class VerificationService {
       message: 'Report generated successfully',
       data: report,
     };
+  }
+
+  async attachDocument(
+    id: string,
+    key: string,
+    filename: string,
+    originalName: string | undefined,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<{ url: string }>> {
+    const allowed: Set<string> = new Set<DocKey>([
+      'panCard',
+      'aadhaarCard',
+      'addressProof',
+      'joiningLetter',
+      'salarySlip',
+      'ownershipDeed',
+      'form16',
+      'accountStatement',
+      'passportPhoto',
+    ]);
+
+    if (!allowed.has(key)) {
+      throw new ForbiddenException('Invalid document key');
+    }
+
+    const vr = await this.repo.findOne({ where: { id } });
+    if (!vr) throw new NotFoundException('Verification request not found');
+    if (user.role !== Role.SUPER_ADMIN && vr.clientId !== user.clientId) {
+      throw new ForbiddenException('You can only update your client records');
+    }
+
+    const prefix = process.env.API_PREFIX || 'api';
+    const url = `/${prefix}/verification-requests/documents/view/${filename}`;
+
+    const current =
+      (vr.documentPayload && typeof vr.documentPayload === 'object'
+        ? (vr.documentPayload as Record<string, unknown>)
+        : {}) ?? {};
+
+    const existing = (current as any)[key];
+    const existingObj =
+      existing && typeof existing === 'object'
+        ? (existing as Record<string, unknown>)
+        : {};
+
+    vr.documentPayload = {
+      ...current,
+      [key]: {
+        ...existingObj,
+        url,
+        fileName: originalName || '',
+      },
+    };
+    vr.status = this.computeStatus(vr);
+    await this.repo.save(vr);
+
+    return {
+      code: HttpStatus.CREATED,
+      message: 'Document uploaded successfully',
+      data: { url },
+    };
+  }
+
+  private computeStatus(input: Partial<VerificationRequest>): VerificationStatus {
+    if (input.status === 'REPORT_GENERATED') return 'REPORT_GENERATED';
+    if (input.status === 'FAILED') return 'FAILED';
+
+    const hasDoc = !!input.doDocumentVerification;
+    const hasDocPayload =
+      input.documentPayload != null &&
+      typeof input.documentPayload === 'object' &&
+      Object.keys(input.documentPayload).length > 0;
+
+    const hasPhysical = !!input.doPhysicalVerification;
+    const hasPhysicalPayload =
+      input.physicalPayload != null &&
+      typeof input.physicalPayload === 'object' &&
+      Object.keys(input.physicalPayload).length > 0;
+
+    if (hasDoc || hasDocPayload || hasPhysical || hasPhysicalPayload) {
+      return 'IN_PROGRESS';
+    }
+    return 'DRAFT';
   }
 }

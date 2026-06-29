@@ -4,7 +4,10 @@ import {
   IsString,
   IsOptional,
   Matches,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ClientSettingsDto } from './client-settings.dto';
 
 export class CreateClientDto {
   // --- Vendor Information ---
@@ -127,4 +130,9 @@ export class CreateClientDto {
   @IsString()
   @IsOptional()
   dueDiligenceDocumentUrl?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ClientSettingsDto)
+  setting?: ClientSettingsDto;
 }

@@ -15,6 +15,12 @@ import { RoleModule } from './modules/role/role.module';
 import { SuperAdminSettingsModule } from './modules/super-admin-settings/super-admin-settings.module';
 import { NotificationModule } from './modules/notification/notification.module';
 import { VerificationModule } from './modules/verification/verification.module';
+import { FieldAssistanceModule } from './modules/field-assistance/field-assistance.module';
+import { ScrappingModule } from './modules/scrapping/scrapping.module';
+import { DigitalVerificationModule } from './modules/digital-verification/digital-verification.module';
+import { OcrVerificationModule } from './modules/ocr-verification/ocr-verification.module';
+import { PhysicalVerificationModule } from './modules/physical-verification/physical-verification.module';
+import { FieldAgentWalletModule } from './modules/field-agent-wallet/field-agent-wallet.module';
 
 @Module({
   imports: [
@@ -27,6 +33,12 @@ import { VerificationModule } from './modules/verification/verification.module';
     SuperAdminSettingsModule,
     NotificationModule,
     VerificationModule,
+    FieldAssistanceModule,
+    ScrappingModule,
+    DigitalVerificationModule,
+    OcrVerificationModule,
+    PhysicalVerificationModule,
+    FieldAgentWalletModule,
   ],
   controllers: [AppController],
   providers: [

@@ -85,6 +85,7 @@ export class ClientsService {
       dueDiligenceDocumentUrl: this.normalizeOptionalString(
         dto.dueDiligenceDocumentUrl,
       ),
+      setting: dto.setting ?? null,
     });
     const client = await this.clientRepo.save(clientEntity);
 

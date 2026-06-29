@@ -15,9 +15,9 @@ const ormDBconfig: MysqlConnectionOptions | any = {
   namingStrategy: new SnakeNamingStrategy(),
   synchronize: true,
   logging: false,
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  // ssl: {
+  //   rejectUnauthorized: false,
+  // },
 };
 
 const dbDataSource = new DataSource({

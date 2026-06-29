@@ -9,7 +9,11 @@ import {
 } from 'typeorm';
 import { Client } from '../../client/entities/client.entity';
 
-export type VerificationStatus = 'DRAFT' | 'REPORT_GENERATED';
+export type VerificationStatus =
+  | 'DRAFT'
+  | 'IN_PROGRESS'
+  | 'REPORT_GENERATED'
+  | 'FAILED';
 
 @Entity('verification_requests')
 export class VerificationRequest {
