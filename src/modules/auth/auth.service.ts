@@ -121,27 +121,17 @@ export class AuthService {
         },
       ];
     }
-    // Internal user: default role with client show + dashboard access
+    if (user.role === Role.FIELD_AGENT) {
+      return [{ moduleCode: 'FIELD_AGENT', permissions: ['VIEW', 'LIST'] }];
+    }
+
+    const customRolePerms = this.permissionsFromCustomRole(user);
+    if (customRolePerms !== null) {
+      return customRolePerms;
+    }
+
     if (user.role === Role.INTERNAL_USER) {
       return [{ moduleCode: 'CLIENT_MANAGEMENT', permissions: ['VIEW'] }];
-    }
-    if (user.customRole?.rolePermissions?.length) {
-      const byModule: Record<string, string[]> = {};
-      for (const rp of user.customRole.rolePermissions) {
-        if (rp.module?.code) {
-          if (!byModule[rp.module.code]) byModule[rp.module.code] = [];
-          if (
-            rp.permission &&
-            !byModule[rp.module.code].includes(rp.permission)
-          ) {
-            byModule[rp.module.code].push(rp.permission);
-          }
-        }
-      }
-      return Object.entries(byModule).map(([moduleCode, permissions]) => ({
-        moduleCode,
-        permissions,
-      }));
     }
     if (user.role === Role.CLIENT_ADMIN) {
       return [
@@ -164,10 +154,33 @@ export class AuthService {
         },
       ];
     }
-    if (user.role === Role.FIELD_AGENT) {
-      return [{ moduleCode: 'FIELD_AGENT', permissions: ['VIEW', 'LIST'] }];
-    }
     return [];
+  }
+
+  /** Returns null when no custom role is assigned; [] when role is inactive or has no permissions. */
+  private permissionsFromCustomRole(user: any): PermissionEntry[] | null {
+    if (!user.customRole) {
+      return null;
+    }
+    if (user.customRole.isActive === false) {
+      return [];
+    }
+    if (!user.customRole.rolePermissions?.length) {
+      return [];
+    }
+    const byModule: Record<string, string[]> = {};
+    for (const rp of user.customRole.rolePermissions) {
+      if (rp.module?.code) {
+        if (!byModule[rp.module.code]) byModule[rp.module.code] = [];
+        if (rp.permission && !byModule[rp.module.code].includes(rp.permission)) {
+          byModule[rp.module.code].push(rp.permission);
+        }
+      }
+    }
+    return Object.entries(byModule).map(([moduleCode, permissions]) => ({
+      moduleCode,
+      permissions,
+    }));
   }
 
   async forgotPassword(email: string): Promise<APIResponseInterface<any>> {

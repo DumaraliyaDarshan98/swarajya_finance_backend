@@ -12,6 +12,7 @@ import {
 import { UsersService } from './users.service';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { CreateInternalUserDto } from './dto/create-internal-user.dto';
+import { CreateClientUserDto } from './dto/create-client-user.dto';
 import { UpdateInternalUserDto } from './dto/update-internal-user.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -20,7 +21,7 @@ import { Role } from '../../enum/role.enum';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+@Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
 export class UsersController {
   constructor(private service: UsersService) {}
 
@@ -33,6 +34,12 @@ export class UsersController {
   @Roles(Role.SUPER_ADMIN)
   createInternalUser(@Body() dto: CreateInternalUserDto) {
     return this.service.createInternalUser(dto);
+  }
+
+  @Post('client-users')
+  @Roles(Role.CLIENT_ADMIN, Role.CLIENT_USER)
+  createClientUser(@Body() dto: CreateClientUserDto, @Request() req: any) {
+    return this.service.createClientUser(dto, req.user);
   }
 
   @Get(':id')

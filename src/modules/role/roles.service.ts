@@ -9,12 +9,15 @@ import { Repository } from 'typeorm';
 import { Role } from './entities/role.entity';
 import { RolePermission } from './entities/role-permission.entity';
 import { AppModule } from '../module/entities/app-module.entity';
+import { Client } from '../client/entities/client.entity';
 import { Permission } from '../../enum/permission.enum';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 import { ListRolesQueryDto } from './dto/list-roles-query.dto';
 import { APIResponseInterface } from '../../interface/response.interface';
 import { Role as RoleEnum } from '../../enum/role.enum';
+
+type RequestUser = { role: string; clientId?: string };
 
 @Injectable()
 export class RolesService {
@@ -23,21 +26,64 @@ export class RolesService {
     @InjectRepository(RolePermission)
     private rolePermissionRepo: Repository<RolePermission>,
     @InjectRepository(AppModule) private moduleRepo: Repository<AppModule>,
+    @InjectRepository(Client) private clientRepo: Repository<Client>,
   ) {}
+
+  private isPlatformAdmin(role: string): boolean {
+    return role === RoleEnum.SUPER_ADMIN || role === RoleEnum.INTERNAL_USER;
+  }
+
+  private isClientTenantMember(user: RequestUser): boolean {
+    return (
+      user.role === RoleEnum.CLIENT_ADMIN ||
+      user.role === RoleEnum.CLIENT_USER
+    );
+  }
+
+  private requireClientId(user: RequestUser): string {
+    if (!user.clientId) {
+      throw new ForbiddenException('Client context is missing');
+    }
+    return user.clientId;
+  }
+
+  private assertRoleClientAccess(
+    user: RequestUser,
+    role: { client?: { id: string } | null },
+  ): void {
+    if (this.isPlatformAdmin(user.role)) {
+      return;
+    }
+    if (this.isClientTenantMember(user)) {
+      const clientId = this.requireClientId(user);
+      if (role.client?.id !== clientId) {
+        throw new ForbiddenException(
+          'You can only access roles of your organization',
+        );
+      }
+      return;
+    }
+    throw new ForbiddenException('Access denied');
+  }
 
   async create(
     dto: CreateRoleDto,
-    user: { role: string; clientId?: string },
+    user: RequestUser,
   ): Promise<APIResponseInterface<Role>> {
+    if (this.isClientTenantMember(user) && user.clientId && !dto.clientId) {
+      dto.clientId = user.clientId;
+    }
+
     if (dto.clientId) {
       if (
-        user.role !== RoleEnum.SUPER_ADMIN &&
+        !this.isPlatformAdmin(user.role) &&
         user.clientId !== dto.clientId
       ) {
         throw new ForbiddenException(
           'You can only create roles for your own client',
         );
       }
+      await this.validateClientRoleCreationLimit(dto.clientId);
     } else {
       if (user.role !== RoleEnum.SUPER_ADMIN) {
         throw new ForbiddenException(
@@ -70,7 +116,7 @@ export class RolesService {
 
   async findAll(
     query: ListRolesQueryDto,
-    user: { role: string; clientId?: string },
+    user: RequestUser,
   ): Promise<APIResponseInterface<Role[]>> {
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 10));
@@ -80,17 +126,25 @@ export class RolesService {
       .createQueryBuilder('role')
       .leftJoinAndSelect('role.rolePermissions', 'rp')
       .leftJoinAndSelect('rp.module', 'm')
-      .leftJoinAndSelect('role.client', 'client') 
+      .leftJoinAndSelect('role.client', 'client')
       .orderBy('role.createdAt', 'DESC');
 
-    if (user.role === RoleEnum.SUPER_ADMIN) {
-      if (query.internalOnly) {
+    const isPlatformAdmin = this.isPlatformAdmin(user.role);
+
+    if (this.isClientTenantMember(user)) {
+      const clientId = this.requireClientId(user);
+      qb.andWhere('role.client_id = :clientId', { clientId });
+    } else if (isPlatformAdmin) {
+      if (query.clientId) {
+        qb.andWhere('role.client_id = :clientId', {
+          clientId: query.clientId,
+        });
+      } else {
+        // Platform role management — internal roles only (not client tenant roles).
         qb.andWhere('role.client_id IS NULL');
-      } else if (query.clientId) {
-        qb.andWhere('role.client_id = :clientId', { clientId: query.clientId });
       }
     } else {
-      qb.andWhere('role.client_id = :clientId', { clientId: user.clientId });
+      throw new ForbiddenException('Access denied');
     }
 
     const [list, total] = await qb.skip(skip).take(limit).getManyAndCount();
@@ -104,19 +158,14 @@ export class RolesService {
 
   async findOne(
     id: string,
-    user: { role: string; clientId?: string },
+    user: RequestUser,
   ): Promise<APIResponseInterface<Role>> {
     const role = await this.roleRepo.findOne({
       where: { id },
       relations: ['rolePermissions', 'rolePermissions.module', 'client'],
     });
     if (!role) throw new NotFoundException('Role not found');
-    if (
-      user.role !== RoleEnum.SUPER_ADMIN &&
-      role.client?.id !== user.clientId
-    ) {
-      throw new ForbiddenException('You can only view roles of your client');
-    }
+    this.assertRoleClientAccess(user, role);
     return {
       code: HttpStatus.OK,
       message: 'Role fetched successfully',
@@ -127,19 +176,14 @@ export class RolesService {
   async update(
     id: string,
     dto: UpdateRoleDto,
-    user: { role: string; clientId?: string },
+    user: RequestUser,
   ): Promise<APIResponseInterface<Role>> {
     const role = await this.roleRepo.findOne({
       where: { id },
       relations: ['client'],
     });
     if (!role) throw new NotFoundException('Role not found');
-    if (
-      user.role !== RoleEnum.SUPER_ADMIN &&
-      role.client?.id !== user.clientId
-    ) {
-      throw new ForbiddenException('You can only update roles of your client');
-    }
+    this.assertRoleClientAccess(user, role);
 
     if (dto.name != null) role.name = dto.name;
     if (dto.description != null) role.description = dto.description;
@@ -164,19 +208,14 @@ export class RolesService {
 
   async remove(
     id: string,
-    user: { role: string; clientId?: string },
+    user: RequestUser,
   ): Promise<APIResponseInterface<null>> {
     const role = await this.roleRepo.findOne({
       where: { id },
       relations: ['client'],
     });
     if (!role) throw new NotFoundException('Role not found');
-    if (
-      user.role !== RoleEnum.SUPER_ADMIN &&
-      role.client?.id !== user.clientId
-    ) {
-      throw new ForbiddenException('You can only delete roles of your client');
-    }
+    this.assertRoleClientAccess(user, role);
     await this.roleRepo.remove(role);
     return {
       code: HttpStatus.OK,
@@ -206,13 +245,45 @@ export class RolesService {
     }
   }
 
-  async getModules(): Promise<APIResponseInterface<AppModule[]>> {
+  async getModules(user?: {
+    role: string;
+  }): Promise<APIResponseInterface<AppModule[]>> {
     const list = await this.moduleRepo.find({ order: { sortOrder: 'ASC' } });
+    const role = user?.role;
+    let filtered = list;
+
+    if (role === RoleEnum.CLIENT_ADMIN || role === RoleEnum.CLIENT_USER) {
+      const excluded = new Set([
+        'INTERNAL_USER_MANAGEMENT',
+        'FIELD_AGENT',
+        'CLIENT_MANAGEMENT',
+      ]);
+      filtered = list.filter((m) => !excluded.has(m.code));
+    } else if (role === RoleEnum.INTERNAL_USER) {
+      filtered = list.filter((m) => m.code !== 'FIELD_AGENT');
+    }
+
     return {
       code: HttpStatus.OK,
       message: 'Modules fetched successfully',
-      data: list,
+      data: filtered,
     };
+  }
+
+  async validateClientRoleCreationLimit(clientId: string): Promise<void> {
+    const client = await this.clientRepo.findOne({ where: { id: clientId } });
+    const maxRoles = client?.setting?.maxRoles;
+    if (maxRoles == null || maxRoles <= 0) {
+      return;
+    }
+    const currentCount = await this.roleRepo.count({
+      where: { client: { id: clientId } as any },
+    });
+    if (currentCount >= maxRoles) {
+      throw new ForbiddenException(
+        'Role creation limit reached for this organization. Contact your administrator.',
+      );
+    }
   }
 
   async seedModulesIfEmpty(): Promise<void> {
@@ -252,6 +323,12 @@ export class RolesService {
         code: 'VERIFICATION',
         description: 'Manage verification requests and reports',
         sortOrder: 6,
+      },
+      {
+        name: 'Field Agent',
+        code: 'FIELD_AGENT',
+        description: 'Manage field agents and wallets',
+        sortOrder: 7,
       },
     ];
     const existing = await this.moduleRepo.find({

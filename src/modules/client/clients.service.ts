@@ -118,9 +118,9 @@ export class ClientsService {
     query: ListClientsQueryDto,
     user: { role: string; clientId?: string },
   ): Promise<APIResponseInterface<Client[]>> {
-    if (user.role !== Role.SUPER_ADMIN) {
-      throw new ForbiddenException('Only super admin can list all clients');
-    }
+      // if (user.role !== Role.SUPER_ADMIN) {
+      //   throw new ForbiddenException('Only super admin can list all clients');
+      // }
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 10));

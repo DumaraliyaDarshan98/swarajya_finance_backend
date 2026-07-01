@@ -9,19 +9,26 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { User } from './entities/user.entity';
+import { Role as RoleEntity } from '../role/entities/role.entity';
+import { Client } from '../client/entities/client.entity';
 import { Role } from '../../enum/role.enum';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { CreateInternalUserDto } from './dto/create-internal-user.dto';
+import { CreateClientUserDto } from './dto/create-client-user.dto';
 import { UpdateInternalUserDto } from './dto/update-internal-user.dto';
 import { APIResponseInterface } from '../../interface/response.interface';
 import { SuperAdminSettingsService } from '../super-admin-settings/super-admin-settings.service';
 
 const DEFAULT_INTERNAL_USER_PASSWORD = 'Internal@123';
 
+type RequestUser = { role: string; clientId?: string; sub?: string };
+
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User) private repo: Repository<User>,
+    @InjectRepository(RoleEntity) private roleRepo: Repository<RoleEntity>,
+    @InjectRepository(Client) private clientRepo: Repository<Client>,
     private readonly superAdminSettingsService: SuperAdminSettingsService,
   ) {}
 
@@ -47,9 +54,24 @@ export class UsersService {
     return normalized.length ? normalized : null;
   }
 
+  private isPlatformAdmin(role: string): boolean {
+    return role === Role.SUPER_ADMIN || role === Role.INTERNAL_USER;
+  }
+
+  private isClientTenantMember(user: RequestUser): boolean {
+    return user.role === Role.CLIENT_ADMIN || user.role === Role.CLIENT_USER;
+  }
+
+  private requireClientId(user: RequestUser): string {
+    if (!user.clientId) {
+      throw new ForbiddenException('Client context is missing');
+    }
+    return user.clientId;
+  }
+
   async findAll(
     query: ListUsersQueryDto,
-    user: { role: string; clientId?: string },
+    user: RequestUser,
   ): Promise<APIResponseInterface<Partial<User>[]>> {
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -71,8 +93,44 @@ export class UsersService {
       .addSelect(['customRole.id', 'customRole.name'])
       .orderBy('user.createdAt', 'DESC');
 
-    if (user.role !== Role.SUPER_ADMIN) {
-      qb.andWhere('client.id = :clientId', { clientId: user.clientId });
+    const isPlatformAdmin = this.isPlatformAdmin(user.role);
+    const isClientTenant = this.isClientTenantMember(user);
+
+    if (query.clientId) {
+      if (isPlatformAdmin) {
+        qb.andWhere('client.id = :clientId', { clientId: query.clientId });
+      } else if (isClientTenant) {
+        const clientId = this.requireClientId(user);
+        if (clientId !== query.clientId) {
+          throw new ForbiddenException(
+            'You can only view users of your organization',
+          );
+        }
+        qb.andWhere('client.id = :clientId', { clientId });
+      } else {
+        throw new ForbiddenException('Access denied');
+      }
+      if (!query.role) {
+        qb.andWhere('user.role = :clientStaffRole', {
+          clientStaffRole: Role.CLIENT_USER,
+        });
+      }
+    } else if (isClientTenant) {
+      const clientId = this.requireClientId(user);
+      qb.andWhere('client.id = :clientId', { clientId });
+      if (!query.role) {
+        qb.andWhere('user.role = :clientStaffRole', {
+          clientStaffRole: Role.CLIENT_USER,
+        });
+      }
+    } else if (isPlatformAdmin) {
+      if (!query.role) {
+        qb.andWhere('user.role IN (:...platformRoles)', {
+          platformRoles: [Role.SUPER_ADMIN, Role.INTERNAL_USER],
+        });
+      }
+    } else {
+      throw new ForbiddenException('Access denied');
     }
 
     if (query.search?.trim()) {
@@ -167,6 +225,9 @@ export class UsersService {
     if (existing) {
       throw new ConflictException('User with this email already exists');
     }
+    if (dto.customRoleId) {
+      await this.validateInternalCustomRole(dto.customRoleId);
+    }
     const password = dto.password?.trim() || DEFAULT_INTERNAL_USER_PASSWORD;
     const hashed = await bcrypt.hash(password, 10);
     const user = this.repo.create({
@@ -209,47 +270,123 @@ export class UsersService {
     };
   }
 
-  /**
-   * ===== CLIENT USER CREATION (LIMIT ENFORCEMENT PLACEHOLDER) =====
-   *
-   * This method shows how to enforce the global max_client_users limit
-   * when implementing client user creation (Role.CLIENT_USER).
-   */
-  async validateClientUserCreationLimit(clientId: string): Promise<void> {
-    const settings =
-      await this.superAdminSettingsService.getEffectiveSettings();
+  async createClientUser(
+    dto: CreateClientUserDto,
+    reqUser: RequestUser,
+  ): Promise<APIResponseInterface<Partial<User>>> {
+    if (!this.isClientTenantMember(reqUser)) {
+      throw new ForbiddenException(
+        'Only organization users can create client staff accounts',
+      );
+    }
+    const clientId = this.requireClientId(reqUser);
 
-    if (!settings.data?.maxClientUsers) {
-      // Unlimited users if not configured
-      return;
+    await this.validateClientUserCreationLimit(clientId);
+    await this.validateClientCustomRole(dto.customRoleId, clientId);
+
+    const existing = await this.repo.findOne({
+      where: { email: dto.email.trim().toLowerCase() },
+    });
+    if (existing) {
+      throw new ConflictException('User with this email already exists');
     }
 
+    const plainPassword =
+      dto.password?.trim() || Math.random().toString(36).slice(-10);
+    const hashed = await bcrypt.hash(plainPassword, 10);
+    const user = this.repo.create({
+      fullName: dto.fullName.trim(),
+      email: dto.email.trim().toLowerCase(),
+      password: hashed,
+      role: Role.CLIENT_USER,
+      customRoleId: dto.customRoleId,
+      mobileNumber: dto.mobileNumber?.trim() ?? null,
+      client: { id: clientId } as Client,
+    });
+    const saved = await this.repo.save(user);
+    const { password: _, resetToken, resetTokenExpiry, ...safe } = saved;
+    return {
+      code: HttpStatus.CREATED,
+      message: 'Client user created successfully',
+      data: safe,
+    };
+  }
+
+  /**
+   * Enforces per-client maxUsers (client.setting) and global maxClientUsers.
+   */
+  async validateClientUserCreationLimit(clientId: string): Promise<void> {
     const currentCount = await this.repo.count({
       where: { role: Role.CLIENT_USER, client: { id: clientId } as any },
     });
 
-    if (currentCount >= settings.data?.maxClientUsers) {
+    const client = await this.clientRepo.findOne({ where: { id: clientId } });
+    const clientMax = client?.setting?.maxUsers;
+    if (clientMax != null && clientMax > 0 && currentCount >= clientMax) {
+      throw new ForbiddenException(
+        'Client user limit reached for this organization. Contact your administrator.',
+      );
+    }
+
+    const settings =
+      await this.superAdminSettingsService.getEffectiveSettings();
+    const globalMax = settings.data?.maxClientUsers;
+    if (globalMax != null && globalMax > 0 && currentCount >= globalMax) {
       throw new ForbiddenException(
         'User creation limit reached. Please contact the administrator.',
       );
     }
   }
 
+  private async validateClientCustomRole(
+    customRoleId: string,
+    clientId: string,
+  ): Promise<void> {
+    const role = await this.roleRepo.findOne({
+      where: { id: customRoleId },
+      relations: ['client'],
+    });
+    if (!role || !role.isActive) {
+      throw new ForbiddenException('Selected role is invalid or inactive');
+    }
+    if (role.client?.id !== clientId) {
+      throw new ForbiddenException(
+        'Selected role does not belong to your organization',
+      );
+    }
+  }
+
+  private async validateInternalCustomRole(customRoleId: string): Promise<void> {
+    const role = await this.roleRepo.findOne({
+      where: { id: customRoleId },
+      relations: ['client'],
+    });
+    if (!role || !role.isActive) {
+      throw new ForbiddenException('Selected role is invalid or inactive');
+    }
+    if (role.client != null) {
+      throw new ForbiddenException(
+        'Internal users must be assigned an internal role',
+      );
+    }
+  }
+
   async findOne(
     id: string,
-    reqUser: { role: string; clientId?: string },
+    reqUser: RequestUser,
   ): Promise<APIResponseInterface<Partial<User>>> {
     const user = await this.repo.findOne({
       where: { id },
-      relations: ['client'],
+      relations: ['client', 'customRole'],
     });
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    if (reqUser.role === Role.SUPER_ADMIN) {
-      // Super admin can view all users.
-    } else if (reqUser.role === Role.CLIENT_ADMIN) {
-      if (!user.client || user.client.id !== reqUser.clientId) {
+    if (this.isPlatformAdmin(reqUser.role)) {
+      // Platform admins can view all users.
+    } else if (this.isClientTenantMember(reqUser)) {
+      const clientId = this.requireClientId(reqUser);
+      if (!user.client || user.client.id !== clientId) {
         throw new ForbiddenException('You can only view users of your client');
       }
     } else {
@@ -266,7 +403,7 @@ export class UsersService {
   async updateInternalUser(
     id: string,
     dto: UpdateInternalUserDto,
-    reqUser: { role: string; clientId?: string },
+    reqUser: RequestUser,
   ): Promise<APIResponseInterface<Partial<User>>> {
     const user = await this.repo.findOne({
       where: { id },
@@ -275,10 +412,11 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    if (reqUser.role === Role.SUPER_ADMIN) {
-      // Super admin can update all users.
-    } else if (reqUser.role === Role.CLIENT_ADMIN) {
-      if (!user.client || user.client.id !== reqUser.clientId) {
+    if (this.isPlatformAdmin(reqUser.role)) {
+      // Platform admins can update all users.
+    } else if (this.isClientTenantMember(reqUser)) {
+      const clientId = this.requireClientId(reqUser);
+      if (!user.client || user.client.id !== clientId) {
         throw new ForbiddenException(
           'You can only update users of your client',
         );
@@ -286,9 +424,41 @@ export class UsersService {
     } else {
       throw new ForbiddenException('Access denied');
     }
+
+    const allowedRoles = this.isPlatformAdmin(reqUser.role)
+      ? [
+          Role.SUPER_ADMIN,
+          Role.INTERNAL_USER,
+          Role.CLIENT_ADMIN,
+          Role.CLIENT_USER,
+          Role.FIELD_AGENT,
+        ]
+      : [Role.CLIENT_USER];
+
+    if (dto.role != null) {
+      if (!allowedRoles.includes(dto.role)) {
+        throw new ForbiddenException('You cannot assign this role');
+      }
+      user.role = dto.role;
+    }
+
+    if (dto.customRoleId != null) {
+      if (this.isClientTenantMember(reqUser) && reqUser.clientId) {
+        await this.validateClientCustomRole(dto.customRoleId, reqUser.clientId);
+      } else if (this.isPlatformAdmin(reqUser.role)) {
+        if (dto.customRoleId && user.client?.id) {
+          await this.validateClientCustomRole(
+            dto.customRoleId,
+            user.client.id,
+          );
+        } else if (dto.customRoleId) {
+          await this.validateInternalCustomRole(dto.customRoleId);
+        }
+      }
+      user.customRoleId = dto.customRoleId || null;
+    }
+
     if (dto.fullName != null) user.fullName = dto.fullName;
-    if (dto.role != null) user.role = dto.role;
-    if (dto.customRoleId != null) user.customRoleId = dto.customRoleId;
     if (dto.employeeType != null) user.employeeType = dto.employeeType;
     if (dto.mobileNumber != null) user.mobileNumber = dto.mobileNumber;
     if (dto.alternateNumber != null) user.alternateNumber = dto.alternateNumber;

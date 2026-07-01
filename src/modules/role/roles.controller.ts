@@ -26,35 +26,35 @@ export class RolesController {
 
   @Post()
   @UseGuards(RolesGuard)
-  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   create(@Body() dto: CreateRoleDto, @Request() req: any) {
     return this.service.create(dto, req.user);
   }
 
   @Get('modules')
   @UseGuards(RolesGuard)
-  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
-  getModules() {
-    return this.service.getModules();
+  @Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
+  getModules(@Request() req: any) {
+    return this.service.getModules(req.user);
   }
 
   @Get()
   @UseGuards(RolesGuard)
-  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   list(@Query() query: ListRolesQueryDto, @Request() req: any) {
     return this.service.findAll(query, req.user);
   }
 
   @Get(':id')
   @UseGuards(RolesGuard)
-  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   getById(@Param('id') id: string, @Request() req: any) {
     return this.service.findOne(id, req.user);
   }
 
   @Patch(':id')
   @UseGuards(RolesGuard)
-  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateRoleDto,
@@ -65,7 +65,7 @@ export class RolesController {
 
   @Delete(':id')
   @UseGuards(RolesGuard)
-  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.INTERNAL_USER, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   remove(@Param('id') id: string, @Request() req: any) {
     return this.service.remove(id, req.user);
   }

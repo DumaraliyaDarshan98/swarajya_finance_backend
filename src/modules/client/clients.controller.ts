@@ -37,7 +37,7 @@ export class ClientsController {
 
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.SUPER_ADMIN)
+  // @Roles(Role.SUPER_ADMIN)
   list(@Query() query: ListClientsQueryDto, @Request() req: any) {
     return this.service.findAll(query, req.user);
   }
