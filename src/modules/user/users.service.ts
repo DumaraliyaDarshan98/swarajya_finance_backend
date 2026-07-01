@@ -113,7 +113,7 @@ export class UsersService {
       if (!query.role) {
         qb.andWhere('user.role = :clientStaffRole', {
           clientStaffRole: Role.CLIENT_USER,
-        });
+        }); 
       }
     } else if (isClientTenant) {
       const clientId = this.requireClientId(user);

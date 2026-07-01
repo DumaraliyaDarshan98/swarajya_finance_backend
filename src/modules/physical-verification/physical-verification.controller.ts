@@ -26,6 +26,7 @@ import { UpsertPhysicalVerificationDto } from './dto/upsert-physical-verificatio
 import { ListPhysicalVerificationQueryDto } from './dto/list-physical-verification-query.dto';
 import { AssignFieldAgentDto } from './dto/assign-field-agent.dto';
 import { SaveFieldAgentSubmissionDto } from './dto/save-field-agent-submission.dto';
+import { UpdateAgentTrackingDto } from './dto/update-agent-tracking.dto';
 import { AdminReviewNoteDto, RejectPhysicalVerificationDto } from './dto/admin-review.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -127,6 +128,16 @@ export class PhysicalVerificationController {
     @Request() req: AuthedReq,
   ) {
     return this.service.saveFieldAgentSubmission(id, dto, req.user);
+  }
+
+  @Patch(':id/agent-tracking')
+  @Roles(Role.FIELD_AGENT, Role.SUPER_ADMIN)
+  updateAgentTracking(
+    @Param('id') id: string,
+    @Body() dto: UpdateAgentTrackingDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.service.updateAgentTracking(id, dto, req.user);
   }
 
   @Post(':id/field-agent-submit')

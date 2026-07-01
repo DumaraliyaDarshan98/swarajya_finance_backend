@@ -16,6 +16,36 @@ type GstScrapeResult = {
   fields: Record<string, string>;
 };
 
+type WhoisScrapeResult = {
+  domain: string;
+  sourceUrl: string;
+  extractedAt: string;
+  fields: Record<string, string>;
+};
+
+type PincodePostOffice = {
+  Name: string;
+  BranchType: string;
+  DeliveryStatus: string;
+  Circle: string;
+  District: string;
+  Division: string;
+  Region: string;
+  Block: string;
+  State: string;
+  Country: string;
+  Pincode: string;
+};
+
+type PincodeLookupResult = {
+  pincode: string;
+  sourceUrl: string;
+  extractedAt: string;
+  message: string;
+  postOffices: PincodePostOffice[];
+  fields: Record<string, string>;
+};
+
 type GstPortalSession = {
   gstNumber: string;
   cookies: any[];
@@ -60,6 +90,16 @@ export class ScrappingService {
     return String(value ?? '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  private normalizeDomain(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .split('/')[0]
+      .split('?')[0];
   }
 
   private cleanupExpiredGstPortalSessions() {
@@ -744,6 +784,211 @@ export class ScrappingService {
         message: 'GST details fetched successfully',
         data: {
           gstNumber: gst,
+          sourceUrl: url,
+          extractedAt: new Date().toISOString(),
+          fields: normalizedFields,
+        },
+      };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  async pincodeLookup(pincodeInput: string): Promise<APIResponseInterface<PincodeLookupResult>> {
+    const pincode = pincodeInput.replace(/\D/g, '').slice(0, 6);
+    if (pincode.length !== 6) {
+      throw new BadRequestException('Pincode must be exactly 6 digits');
+    }
+
+    const url = `https://api.postalpincode.in/pincode/${pincode}`;
+    let json: unknown;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new ServiceUnavailableException('Pincode API request failed');
+      }
+      json = await res.json();
+    } catch (error: any) {
+      if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException(
+        error?.message ?? 'Pincode API request failed',
+      );
+    }
+
+    const first = Array.isArray(json) ? json[0] : json;
+    const status = (first as { Status?: string })?.Status;
+    const postOffices = (first as { PostOffice?: PincodePostOffice[] })?.PostOffice ?? [];
+    if (status !== 'Success' || !postOffices.length) {
+      throw new NotFoundException(`No post office data found for pincode ${pincode}`);
+    }
+
+    const primary = postOffices[0];
+    const fields: Record<string, string> = {
+      'Post Office': this.normalizeText(primary.Name),
+      'Branch Type': this.normalizeText(primary.BranchType),
+      'Delivery Status': this.normalizeText(primary.DeliveryStatus),
+      Circle: this.normalizeText(primary.Circle),
+      District: this.normalizeText(primary.District),
+      Division: this.normalizeText(primary.Division),
+      Region: this.normalizeText(primary.Region),
+      Block: this.normalizeText(primary.Block),
+      State: this.normalizeText(primary.State),
+      Country: this.normalizeText(primary.Country),
+      Pincode: this.normalizeText(primary.Pincode),
+    };
+    if (postOffices.length > 1) {
+      fields['Post Offices Found'] = String(postOffices.length);
+    }
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Pincode details fetched successfully',
+      data: {
+        pincode,
+        sourceUrl: url,
+        extractedAt: new Date().toISOString(),
+        message: this.normalizeText((first as { Message?: string })?.Message),
+        postOffices,
+        fields,
+      },
+    };
+  }
+
+  async whoisSearch(domainInput: string): Promise<APIResponseInterface<WhoisScrapeResult>> {
+    const domain = this.normalizeDomain(domainInput);
+    if (!domain) {
+      throw new BadRequestException('Domain is required');
+    }
+
+    const baseUrl = 'https://www.whois.com/whois/';
+    const url = `${baseUrl}${encodeURIComponent(domain)}`;
+
+    const browser = await this.launchBrowser();
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(45_000);
+      page.setDefaultTimeout(20_000);
+
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+      const resultsSelector = '.df-block, .df-row, #lookup-results, .whois-data';
+      let hasResults = !!(await page.$(resultsSelector));
+
+      if (!hasResults) {
+        const searchSelectors = [
+          'input[name="domain"]',
+          'input#domain',
+          'input[type="search"]',
+          'form input[type="text"]',
+        ];
+        for (const selector of searchSelectors) {
+          const input = await page.$(selector);
+          if (!input) continue;
+          await page.evaluate(
+            (sel, value) => {
+              const el = document.querySelector(sel) as HTMLInputElement | null;
+              if (!el) return;
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            },
+            selector,
+            domain,
+          );
+          const navigationPromise = page
+            .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 })
+            .catch(() => undefined);
+          const submitPromise = page
+            .evaluate((sel) => {
+              const el = document.querySelector(sel) as HTMLInputElement | null;
+              const form = el?.closest('form');
+              if (form) {
+                form.requestSubmit();
+                return;
+              }
+              el?.dispatchEvent(
+                new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+              );
+            }, selector)
+            .catch(() => undefined);
+          await Promise.all([navigationPromise, submitPromise]);
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+          hasResults = !!(await page.$(resultsSelector));
+          if (hasResults) break;
+        }
+      }
+
+      await page.waitForSelector(resultsSelector, { timeout: 20_000 }).catch(() => undefined);
+
+      const fields = await page.evaluate(() => {
+        const result: Record<string, string> = {};
+        const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+        const addPair = (key: string, value: string) => {
+          const k = clean(key).replace(/:$/, '');
+          const v = clean(value);
+          if (k && v && !/^security check$/i.test(k)) {
+            result[k] = v;
+          }
+        };
+
+        document.querySelectorAll('.df-block').forEach((block) => {
+          const label = block.querySelector('.df-label, .df-key, dt');
+          const value = block.querySelector('.df-value, .df-val, dd');
+          if (label && value) {
+            addPair(label.textContent ?? '', value.textContent ?? '');
+          }
+        });
+
+        document.querySelectorAll('.df-row').forEach((row) => {
+          const label = row.querySelector('.df-label, .df-key, th, strong');
+          const value = row.querySelector('.df-value, .df-val, td:last-child, span:last-child');
+          if (label && value && label !== value) {
+            addPair(label.textContent ?? '', value.textContent ?? '');
+          }
+        });
+
+        document.querySelectorAll('dl').forEach((dl) => {
+          dl.querySelectorAll('dt').forEach((dt) => {
+            const dd = dt.nextElementSibling;
+            if (dd?.tagName === 'DD') {
+              addPair(dt.textContent ?? '', dd.textContent ?? '');
+            }
+          });
+        });
+
+        document.querySelectorAll('table tr').forEach((tr) => {
+          const cells = Array.from(tr.querySelectorAll('th, td')).map((cell) =>
+            clean(cell.textContent ?? ''),
+          );
+          if (cells.length >= 2 && cells[0] && cells[1]) {
+            addPair(cells[0], cells[1]);
+          }
+        });
+
+        return result;
+      });
+
+      const normalizedFields: Record<string, string> = {};
+      for (const [k, v] of Object.entries(fields ?? {})) {
+        const nk = this.normalizeText(k);
+        const nv = this.normalizeText(v);
+        if (nk && nv) normalizedFields[nk] = nv;
+      }
+
+      if (Object.keys(normalizedFields).length === 0) {
+        throw new ServiceUnavailableException(
+          'WHOIS lookup returned no data for this domain',
+        );
+      }
+
+      return {
+        code: HttpStatus.OK,
+        message: 'WHOIS details fetched successfully',
+        data: {
+          domain,
           sourceUrl: url,
           extractedAt: new Date().toISOString(),
           fields: normalizedFields,

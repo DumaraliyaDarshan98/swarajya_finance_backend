@@ -24,6 +24,10 @@ export class SaveFieldAgentSubmissionDto {
 
   @IsOptional()
   @IsObject()
+  agentTracking?: FieldAgentSubmission['agentTracking'];
+
+  @IsOptional()
+  @IsObject()
   residential?: HomeAddressVerification | null;
 
   @IsOptional()

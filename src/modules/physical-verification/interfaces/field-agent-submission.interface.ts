@@ -99,8 +99,17 @@ export interface OfficeAddressVerification {
   triggerFileUrl: string;
 }
 
+export interface AgentDrivingTracking {
+  isDriving: boolean;
+  destination: 'residential' | 'office' | null;
+  startedAt?: string;
+  stoppedAt?: string;
+  routeHistory: GeoLocation[];
+}
+
 export interface FieldAgentSubmission {
   agentLocation: GeoLocation | null;
+  agentTracking?: AgentDrivingTracking | null;
   verifyResidential: boolean;
   verifyOffice: boolean;
   residential: HomeAddressVerification | null;

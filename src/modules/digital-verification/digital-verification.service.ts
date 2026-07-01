@@ -15,7 +15,17 @@ import { Role } from '../../enum/role.enum';
 import type {
   DigitalVerificationStatus,
   ScrapePayload,
+  ScrapeResultEntry,
 } from './interfaces/scrape-payload.interface';
+import { businessNamesMatch, normalizeDomain } from './helpers/business-verification.helper';
+import {
+  buildMapEmbedFromQuery,
+  buildMapEmbedUrl,
+  buildStreetViewEmbedUrl,
+  buildStreetViewLink,
+  geocodeAddress,
+  joinAddressParts,
+} from './helpers/address-enrichment.helper';
 
 type AuthedUser = { role: Role; clientId?: string };
 
@@ -35,6 +45,7 @@ export class DigitalVerificationService {
 
   private mapDtoToFields(dto: UpsertDigitalVerificationDto): Partial<DigitalVerification> {
     const hasOffice = !!dto.hasOfficeAddress;
+    const hasBusiness = !!dto.hasBusinessAddress;
     return {
       loanApplicationNo: this.normalizeOptional(dto.loanApplicationNo),
       loanType: this.normalizeOptional(dto.loanType),
@@ -49,10 +60,21 @@ export class DigitalVerificationService {
       residentialCity: this.normalizeOptional(dto.residentialCity),
       residentialPincode: this.normalizeOptional(dto.residentialPincode),
       hasOfficeAddress: hasOffice,
-      companyName: hasOffice ? this.normalizeOptional(dto.companyName) : null,
-      gstNumber: hasOffice
+      hasBusinessAddress: hasBusiness,
+      companyName: hasBusiness ? this.normalizeOptional(dto.companyName) : null,
+      companyDomain: hasBusiness
+        ? normalizeDomain(this.normalizeOptional(dto.companyDomain) ?? '') || null
+        : null,
+      gstNumber: hasBusiness
         ? (this.normalizeOptional(dto.gstNumber)?.toUpperCase() ?? null)
         : null,
+      businessPan: hasBusiness
+        ? (this.normalizeOptional(dto.businessPan)?.toUpperCase() ?? null)
+        : null,
+      cinNumber: hasBusiness
+        ? (this.normalizeOptional(dto.cinNumber)?.toUpperCase() ?? null)
+        : null,
+      businessType: hasBusiness ? this.normalizeOptional(dto.businessType) : null,
       officeAddress: hasOffice ? this.normalizeOptional(dto.officeAddress) : null,
       officeLandmark: hasOffice ? this.normalizeOptional(dto.officeLandmark) : null,
       officeState: hasOffice ? this.normalizeOptional(dto.officeState) : null,
@@ -104,7 +126,8 @@ export class DigitalVerificationService {
       qb.andWhere(
         `(dv.loan_application_no LIKE :term OR dv.applicant_name LIKE :term OR dv.loan_type LIKE :term
           OR dv.pan_number LIKE :term OR dv.mobile_number LIKE :term OR dv.email_id LIKE :term
-          OR dv.residential_city LIKE :term OR dv.gst_number LIKE :term)`,
+          OR dv.residential_city LIKE :term OR dv.gst_number LIKE :term
+          OR dv.company_domain LIKE :term OR dv.company_name LIKE :term)`,
         { term },
       );
     }
@@ -237,6 +260,87 @@ export class DigitalVerificationService {
     };
   }
 
+  private async enrichAddressSection(parts: {
+    address?: string | null;
+    landmark?: string | null;
+    city?: string | null;
+    state?: string | null;
+    pincode?: string | null;
+  }): Promise<ScrapeResultEntry> {
+    const submittedAddress = joinAddressParts([
+      parts.address,
+      parts.landmark,
+      parts.city,
+      parts.state,
+      parts.pincode,
+    ]);
+    const pincode = parts.pincode?.replace(/\D/g, '').slice(0, 6) || null;
+
+    let pincodeFields: Record<string, string> = {};
+    let pincodeMessage = '';
+    let pincodeError: string | undefined;
+
+    if (pincode) {
+      try {
+        const res = await this.scrappingService.pincodeLookup(pincode);
+        pincodeFields = res.data?.fields ?? {};
+        pincodeMessage = res.data?.message ?? '';
+      } catch (error: any) {
+        pincodeError = error?.message ?? 'Pincode lookup failed';
+      }
+    }
+
+    const geocodeQuery =
+      submittedAddress && submittedAddress !== '.'
+        ? submittedAddress
+        : pincodeFields.District && pincodeFields.State
+          ? `${pincodeFields.District}, ${pincodeFields.State}, India ${pincode ?? ''}`.trim()
+          : pincode
+            ? `${pincode}, India`
+            : '';
+
+    const coords = geocodeQuery ? await geocodeAddress(geocodeQuery) : null;
+    const latitude = coords?.latitude ?? null;
+    const longitude = coords?.longitude ?? null;
+
+    let mapEmbedUrl = '';
+    let streetViewLink: string | null = null;
+    let streetViewEmbedUrl: string | null = null;
+
+    if (latitude && longitude) {
+      mapEmbedUrl = buildMapEmbedUrl(latitude, longitude);
+      streetViewLink = buildStreetViewLink(latitude, longitude);
+      streetViewEmbedUrl = buildStreetViewEmbedUrl(latitude, longitude);
+    } else if (geocodeQuery) {
+      mapEmbedUrl = buildMapEmbedFromQuery(geocodeQuery);
+    }
+
+    const pincodeOk = !!pincode && Object.keys(pincodeFields).length > 0;
+    const geoOk = !!(latitude && longitude && mapEmbedUrl);
+    const success = pincodeOk || geoOk;
+
+    return {
+      source: 'postalpincode.in',
+      scrapedAt: new Date().toISOString(),
+      success,
+      data: {
+        submittedAddress: submittedAddress || null,
+        pincode,
+        pincodeFields,
+        pincodeMessage,
+        latitude,
+        longitude,
+        mapEmbedUrl,
+        streetViewLink,
+        streetViewEmbedUrl,
+        geocodeQuery: geocodeQuery || null,
+      },
+      error:
+        pincodeError ??
+        (success ? undefined : 'Could not fetch pincode details or geocode this address'),
+    };
+  }
+
   async generateReport(
     id: string,
     user: AuthedUser,
@@ -249,23 +353,89 @@ export class DigitalVerificationService {
     const scrapePayload: ScrapePayload = { ...(record.scrapePayload ?? {}) };
     let hasFailure = false;
 
-    if (record.hasOfficeAddress && record.gstNumber?.trim()) {
-      try {
-        const res = await this.scrappingService.gstSearch(record.gstNumber.trim());
-        scrapePayload.gst = {
-          source: 'gst-search',
-          scrapedAt: new Date().toISOString(),
-          success: true,
-          data: res.data as unknown as Record<string, unknown>,
-        };
-      } catch (error: any) {
+    scrapePayload.residentialAddress = await this.enrichAddressSection({
+      address: record.residentialAddress,
+      landmark: record.residentialLandmark,
+      city: record.residentialCity,
+      state: record.residentialState,
+      pincode: record.residentialPincode,
+    });
+
+    if (record.hasOfficeAddress) {
+      scrapePayload.officeAddress = await this.enrichAddressSection({
+        address: record.officeAddress,
+        landmark: record.officeLandmark,
+        city: record.officeCity,
+        state: record.officeState,
+        pincode: record.officePincode,
+      });
+    }
+
+    if (record.hasBusinessAddress) {
+      if (record.gstNumber?.trim()) {
+        try {
+          const res = await this.scrappingService.gstSearch(record.gstNumber.trim());
+          scrapePayload.gst = {
+            source: 'knowyourgst',
+            scrapedAt: new Date().toISOString(),
+            success: true,
+            data: res.data as unknown as Record<string, unknown>,
+          };
+        } catch (error: any) {
+          hasFailure = true;
+          scrapePayload.gst = {
+            source: 'knowyourgst',
+            scrapedAt: new Date().toISOString(),
+            success: false,
+            error: error?.message ?? 'GST verification failed',
+          };
+        }
+      }
+
+      if (record.companyDomain?.trim()) {
+        try {
+          const res = await this.scrappingService.whoisSearch(record.companyDomain.trim());
+          scrapePayload.domain = {
+            source: 'whois.com',
+            scrapedAt: new Date().toISOString(),
+            success: true,
+            data: res.data as unknown as Record<string, unknown>,
+          };
+        } catch (error: any) {
+          hasFailure = true;
+          scrapePayload.domain = {
+            source: 'whois.com',
+            scrapedAt: new Date().toISOString(),
+            success: false,
+            error: error?.message ?? 'WHOIS domain verification failed',
+          };
+        }
+      }
+
+      const gstFields =
+        (scrapePayload.gst?.data as { fields?: Record<string, string> } | undefined)?.fields ?? {};
+      const gstLegalName =
+        gstFields['Legal Name of Business'] ||
+        gstFields['Legal Name'] ||
+        gstFields['Trade Name'] ||
+        '';
+      const nameMatched = businessNamesMatch(record.companyName ?? '', gstLegalName);
+      scrapePayload.businessMatch = {
+        source: 'gst-name-compare',
+        scrapedAt: new Date().toISOString(),
+        success: scrapePayload.gst?.success ? nameMatched : false,
+        data: {
+          submittedBusinessName: record.companyName,
+          gstLegalName,
+          matched: nameMatched,
+        },
+        error:
+          scrapePayload.gst?.success && !nameMatched
+            ? 'Submitted business name does not match GST public records'
+            : undefined,
+      };
+      if (scrapePayload.gst?.success && !nameMatched) {
         hasFailure = true;
-        scrapePayload.gst = {
-          source: 'gst-search',
-          scrapedAt: new Date().toISOString(),
-          success: false,
-          error: error?.message ?? 'GST verification failed',
-        };
       }
     }
 
@@ -277,7 +447,7 @@ export class DigitalVerificationService {
     return {
       code: HttpStatus.OK,
       message: hasFailure
-        ? 'Report generation failed during GST verification'
+        ? 'Report generation failed during business verification'
         : 'Digital verification report generated successfully',
       data: saved,
     };

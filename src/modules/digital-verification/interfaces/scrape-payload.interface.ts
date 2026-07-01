@@ -15,5 +15,9 @@ export interface ScrapeResultEntry {
 /** Extensible JSON store for government / scraping API responses. */
 export interface ScrapePayload {
   gst?: ScrapeResultEntry;
+  domain?: ScrapeResultEntry;
+  businessMatch?: ScrapeResultEntry;
+  residentialAddress?: ScrapeResultEntry;
+  officeAddress?: ScrapeResultEntry;
   [key: string]: ScrapeResultEntry | undefined;
 }

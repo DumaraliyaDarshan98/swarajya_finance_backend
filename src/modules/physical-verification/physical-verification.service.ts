@@ -16,6 +16,7 @@ import { UpsertPhysicalVerificationDto } from './dto/upsert-physical-verificatio
 import { ListPhysicalVerificationQueryDto } from './dto/list-physical-verification-query.dto';
 import { AssignFieldAgentDto } from './dto/assign-field-agent.dto';
 import { SaveFieldAgentSubmissionDto } from './dto/save-field-agent-submission.dto';
+import { UpdateAgentTrackingDto } from './dto/update-agent-tracking.dto';
 import { AdminReviewNoteDto, RejectPhysicalVerificationDto } from './dto/admin-review.dto';
 import { APIResponseInterface } from '../../interface/response.interface';
 import { Role } from '../../enum/role.enum';
@@ -243,6 +244,8 @@ export class PhysicalVerificationService {
       verifyResidential: dto.verifyResidential ?? existing.verifyResidential,
       verifyOffice: dto.verifyOffice ?? existing.verifyOffice,
       agentLocation: dto.agentLocation ?? existing.agentLocation,
+      agentTracking:
+        dto.agentTracking !== undefined ? dto.agentTracking : existing.agentTracking ?? null,
       residential: dto.residential !== undefined ? dto.residential : existing.residential,
       office: dto.office !== undefined ? dto.office : existing.office,
       savedAt: new Date().toISOString(),
@@ -598,6 +601,13 @@ export class PhysicalVerificationService {
     record.fieldAgentSubmission = {
       ...record.fieldAgentSubmission,
       submittedAt: new Date().toISOString(),
+      agentTracking: record.fieldAgentSubmission.agentTracking
+        ? {
+            ...record.fieldAgentSubmission.agentTracking,
+            isDriving: false,
+            stoppedAt: new Date().toISOString(),
+          }
+        : record.fieldAgentSubmission.agentTracking,
     };
     record.status = 'AGENT_SUBMITTED';
     const saved = await this.repo.save(record);
@@ -613,6 +623,95 @@ export class PhysicalVerificationService {
     return {
       code: HttpStatus.OK,
       message: 'Verification details submitted successfully',
+      data: saved,
+    };
+  }
+
+  async updateAgentTracking(
+    id: string,
+    dto: UpdateAgentTrackingDto,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<PhysicalVerification>> {
+    const record = await this.findOwned(id, user);
+
+    if (user.role === Role.FIELD_AGENT) {
+      await this.assertFieldAgentEditable(record);
+    } else if (user.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Not allowed to update agent tracking');
+    }
+
+    const capturedAt = dto.capturedAt ?? new Date().toISOString();
+    const point = {
+      latitude: String(dto.latitude),
+      longitude: String(dto.longitude),
+      capturedAt,
+    };
+
+    const existing = record.fieldAgentSubmission ?? {
+      agentLocation: null,
+      agentTracking: null,
+      verifyResidential: !!record.applicant?.hasResidentialAddress,
+      verifyOffice: !!record.applicant?.hasOfficeAddress,
+      residential: null,
+      office: null,
+    };
+
+    const prevTracking = existing.agentTracking ?? {
+      isDriving: false,
+      destination: null,
+      routeHistory: [],
+    };
+
+    const isDriving = dto.isDriving ?? prevTracking.isDriving;
+    const destination = dto.destination ?? prevTracking.destination;
+    const routeHistory = [...(prevTracking.routeHistory ?? [])];
+
+    if (isDriving) {
+      const last = routeHistory[routeHistory.length - 1];
+      const isDuplicate =
+        last &&
+        last.latitude === point.latitude &&
+        last.longitude === point.longitude;
+      if (!isDuplicate) {
+        routeHistory.push(point);
+        if (routeHistory.length > 100) {
+          routeHistory.splice(0, routeHistory.length - 100);
+        }
+      }
+    }
+
+    const startedAt =
+      isDriving && !prevTracking.isDriving
+        ? capturedAt
+        : prevTracking.startedAt;
+    const stoppedAt =
+      !isDriving && prevTracking.isDriving
+        ? capturedAt
+        : isDriving
+          ? undefined
+          : prevTracking.stoppedAt;
+
+    record.fieldAgentSubmission = {
+      ...existing,
+      agentLocation: point,
+      agentTracking: {
+        isDriving,
+        destination,
+        startedAt,
+        stoppedAt,
+        routeHistory,
+      },
+    };
+
+    if (user.role === Role.FIELD_AGENT && record.status === 'AGENT_ASSIGNED') {
+      record.status = 'AGENT_DRAFT';
+    }
+
+    const saved = await this.repo.save(record);
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Agent location updated',
       data: saved,
     };
   }
