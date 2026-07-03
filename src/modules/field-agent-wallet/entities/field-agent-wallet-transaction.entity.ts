@@ -20,8 +20,12 @@ export class FieldAgentWalletTransaction {
   @Column({ name: 'field_agent_name', type: 'varchar', length: 255, nullable: true })
   fieldAgentName: string | null;
 
-  @Column({ name: 'physical_verification_id', type: 'uuid', unique: true })
+  @Column({ name: 'physical_verification_id', type: 'uuid' })
+  @Index()
   physicalVerificationId: string;
+
+  @Column({ name: 'physical_verification_visit_id', type: 'uuid', nullable: true, unique: true })
+  physicalVerificationVisitId: string | null;
 
   @Column({ type: 'decimal', precision: 12, scale: 2 })
   amount: number;

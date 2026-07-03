@@ -13,6 +13,9 @@ export type PhysicalLogAction =
   | 'SUBMITTED'
   | 'AGENT_ASSIGNED'
   | 'AGENT_REASSIGNED'
+  | 'AGENT_DECLINED'
+  | 'TRIP_STARTED'
+  | 'TRIP_ENDED'
   | 'AGENT_DRAFT_SAVED'
   | 'AGENT_SUBMITTED'
   | 'APPROVED'
@@ -31,6 +34,10 @@ export class PhysicalLog {
   @Column({ name: 'physical_verification_id', type: 'uuid' })
   @Index()
   physicalVerificationId: string;
+
+  @Column({ name: 'physical_verification_visit_id', type: 'uuid', nullable: true })
+  @Index()
+  physicalVerificationVisitId: string | null;
 
   @Column({ type: 'varchar', length: 50 })
   action: PhysicalLogAction;

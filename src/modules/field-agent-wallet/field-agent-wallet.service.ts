@@ -4,7 +4,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { FieldAgentWallet } from './entities/field-agent-wallet.entity';
 import { FieldAgentWalletTransaction } from './entities/field-agent-wallet-transaction.entity';
 import { ListWalletTransactionsQueryDto } from './dto/list-wallet-transactions-query.dto';
@@ -12,6 +12,7 @@ import { APIResponseInterface } from '../../interface/response.interface';
 import { Role } from '../../enum/role.enum';
 import { PHYSICAL_CASE_REWARD_AMOUNT } from './constants';
 import { PhysicalVerification } from '../physical-verification/entities/physical-verification.entity';
+import { PhysicalVerificationVisit } from '../physical-verification/entities/physical-verification-visit.entity';
 import { FieldAssistant } from '../field-assistance/entities/field-assistant.entity';
 import { User } from '../user/entities/user.entity';
 
@@ -148,13 +149,31 @@ export class FieldAgentWalletService {
     return this.walletRepo.save(wallet);
   }
 
-  async creditForPhysicalCompletion(record: PhysicalVerification): Promise<void> {
-    const agentUserId = record.assignedFieldAgentUserId;
+  async creditForPhysicalCompletion(
+    record: PhysicalVerification,
+    visits: PhysicalVerificationVisit[] = [],
+  ): Promise<void> {
+    if (visits.length) {
+      for (const visit of visits) {
+        await this.creditAgentForVisit(record, visit);
+      }
+      return;
+    }
+    await this.creditAgentForVisit(record, null);
+  }
+
+  private async creditAgentForVisit(
+    record: PhysicalVerification,
+    visit: PhysicalVerificationVisit | null,
+  ): Promise<void> {
+    const agentUserId = visit?.assignedFieldAgentUserId ?? record.assignedFieldAgentUserId;
     if (!agentUserId) return;
 
-    const existing = await this.txRepo.findOne({
-      where: { physicalVerificationId: record.id },
-    });
+    const existing = visit?.id
+      ? await this.txRepo.findOne({ where: { physicalVerificationVisitId: visit.id } })
+      : await this.txRepo.findOne({
+          where: { physicalVerificationId: record.id, physicalVerificationVisitId: IsNull() },
+        });
     if (existing) return;
 
     const agentUser = await this.userRepo.findOne({ where: { id: agentUserId } });
@@ -168,6 +187,7 @@ export class FieldAgentWalletService {
     });
 
     const agentName =
+      visit?.assignedFieldAgentName?.trim() ||
       record.assignedFieldAgentName?.trim() ||
       agentUser?.fullName?.trim() ||
       agentUser?.email?.trim() ||
@@ -183,12 +203,13 @@ export class FieldAgentWalletService {
       fieldAgentUserId: agentUserId,
       fieldAgentName: agentName,
       physicalVerificationId: record.id,
+      physicalVerificationVisitId: visit?.id ?? null,
       amount: PHYSICAL_CASE_REWARD_AMOUNT,
       status: 'CREDITED',
       loanNo: record.agreementNumber,
       customerName: record.customerName,
       product: record.product,
-      location: record.city,
+      location: visit?.addressSnapshot?.city ?? record.city,
       rcuManager: withClient?.client?.companyName ?? null,
       verificationType: record.physicalVerificationType,
       completedAt: record.reportGeneratedAt ?? new Date(),

@@ -22,10 +22,12 @@ import {
   PhysicalVerificationService,
   PHYSICAL_UPLOAD_DIR,
 } from './physical-verification.service';
+import { PhysicalVerificationVisitService } from './physical-verification-visit.service';
 import { UpsertPhysicalVerificationDto } from './dto/upsert-physical-verification.dto';
 import { ListPhysicalVerificationQueryDto } from './dto/list-physical-verification-query.dto';
 import { AssignFieldAgentDto } from './dto/assign-field-agent.dto';
 import { SaveFieldAgentSubmissionDto } from './dto/save-field-agent-submission.dto';
+import { SaveVisitFieldAgentSubmissionDto } from './dto/save-visit-field-agent-submission.dto';
 import { UpdateAgentTrackingDto } from './dto/update-agent-tracking.dto';
 import { AdminReviewNoteDto, RejectPhysicalVerificationDto } from './dto/admin-review.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -43,7 +45,10 @@ const ALLOWED_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER, Role.FIELD_AGENT)
 export class PhysicalVerificationController {
-  constructor(private service: PhysicalVerificationService) {}
+  constructor(
+    private service: PhysicalVerificationService,
+    private visitService: PhysicalVerificationVisitService,
+  ) {}
 
   @Get()
   list(@Query() query: ListPhysicalVerificationQueryDto, @Request() req: AuthedReq) {
@@ -53,6 +58,136 @@ export class PhysicalVerificationController {
   @Get('stats')
   stats(@Request() req: AuthedReq) {
     return this.service.stats(req.user);
+  }
+
+  @Get('visits/assigned')
+  @Roles(Role.FIELD_AGENT)
+  listAssignedVisits(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Request() req?: AuthedReq,
+  ) {
+    return this.visitService.listAssignedVisits(
+      req!.user,
+      page ? Number(page) : 1,
+      limit ? Number(limit) : 10,
+      search,
+    );
+  }
+
+  @Get('visits/:visitId')
+  getVisitById(@Param('visitId') visitId: string, @Request() req: AuthedReq) {
+    return this.visitService.getVisitById(visitId, req.user);
+  }
+
+  @Post('visits/:visitId/assign-agent')
+  @Roles(Role.SUPER_ADMIN)
+  assignVisitAgent(
+    @Param('visitId') visitId: string,
+    @Body() dto: AssignFieldAgentDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.assignVisitAgent(visitId, dto, req.user);
+  }
+
+  @Patch('visits/:visitId/field-agent-submission')
+  @Roles(Role.FIELD_AGENT)
+  saveVisitFieldAgentSubmission(
+    @Param('visitId') visitId: string,
+    @Body() dto: SaveVisitFieldAgentSubmissionDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.saveVisitSubmission(visitId, dto, req.user);
+  }
+
+  @Post('visits/:visitId/field-agent-submit')
+  @Roles(Role.FIELD_AGENT)
+  submitVisitFieldAgentSubmission(@Param('visitId') visitId: string, @Request() req: AuthedReq) {
+    return this.visitService.submitVisitSubmission(visitId, req.user);
+  }
+
+  @Patch('visits/:visitId/agent-tracking')
+  @Roles(Role.FIELD_AGENT, Role.SUPER_ADMIN)
+  updateVisitAgentTracking(
+    @Param('visitId') visitId: string,
+    @Body() dto: UpdateAgentTrackingDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.updateVisitTracking(visitId, dto, req.user);
+  }
+
+  @Post('visits/:visitId/start-trip')
+  @Roles(Role.FIELD_AGENT)
+  startVisitTrip(
+    @Param('visitId') visitId: string,
+    @Body() dto: UpdateAgentTrackingDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.startVisitTrip(visitId, dto, req.user);
+  }
+
+  @Post('visits/:visitId/end-trip')
+  @Roles(Role.FIELD_AGENT)
+  endVisitTrip(
+    @Param('visitId') visitId: string,
+    @Body() dto: UpdateAgentTrackingDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.endVisitTrip(visitId, dto, req.user);
+  }
+
+  @Post('visits/:visitId/decline')
+  @Roles(Role.FIELD_AGENT)
+  declineVisit(
+    @Param('visitId') visitId: string,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.declineVisitAssignment(visitId, req.user);
+  }
+
+  @Post('visits/:visitId/field-upload')
+  @Roles(Role.FIELD_AGENT)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_SIZE },
+      fileFilter: (_req, file, cb) => {
+        if (!file.mimetype || !ALLOWED_MIMES.includes(file.mimetype)) {
+          return cb(new BadRequestException('Invalid file type'), false);
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadVisitFieldFile(
+    @Param('visitId') visitId: string,
+    @UploadedFile() file: UploadedFileLike | undefined,
+    @Body('key') key: string | undefined,
+    @Request() req: AuthedReq,
+  ) {
+    if (!key?.trim()) throw new BadRequestException('key is required');
+    return this.visitService.uploadVisitFile(visitId, key.trim(), file as any, req.user);
+  }
+
+  @Post('visits/:visitId/approve')
+  @Roles(Role.SUPER_ADMIN)
+  approveVisit(
+    @Param('visitId') visitId: string,
+    @Body() dto: AdminReviewNoteDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.approveVisit(visitId, dto, req.user);
+  }
+
+  @Post('visits/:visitId/reject')
+  @Roles(Role.SUPER_ADMIN)
+  rejectVisit(
+    @Param('visitId') visitId: string,
+    @Body() dto: RejectPhysicalVerificationDto,
+    @Request() req: AuthedReq,
+  ) {
+    return this.visitService.rejectVisit(visitId, dto, req.user);
   }
 
   @Get('files/view/:filename')
@@ -87,6 +222,11 @@ export class PhysicalVerificationController {
   @Roles(Role.SUPER_ADMIN)
   getLogs(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.getLogs(id, req.user);
+  }
+
+  @Get(':id/visits')
+  listVisitsForParent(@Param('id') id: string, @Request() req: AuthedReq) {
+    return this.visitService.listVisitsForParent(id, req.user);
   }
 
   @Get(':id')

@@ -69,6 +69,10 @@ export class UpsertPhysicalVerificationDto {
   @ValidateNested({ each: true })
   @Type(() => DocumentTypeVerificationDto)
   documentTypeVerifications?: DocumentTypeVerificationDto[];
+
+  @IsOptional()
+  @IsIn(['HIGH', 'MEDIUM', 'LOW'])
+  priority?: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
 export class SubmitPhysicalVerificationDto {

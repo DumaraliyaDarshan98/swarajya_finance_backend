@@ -3,11 +3,13 @@ import {
   Column,
   PrimaryGeneratedColumn,
   ManyToOne,
+  OneToMany,
   CreateDateColumn,
   UpdateDateColumn,
   Index,
 } from 'typeorm';
 import { Client } from '../../client/entities/client.entity';
+import { PhysicalVerificationVisit } from './physical-verification-visit.entity';
 import type {
   DocumentTypeVerification,
   FieldAgentSubmission,
@@ -15,6 +17,7 @@ import type {
   PhysicalReportPayload,
   PhysicalVerificationStatus,
 } from '../interfaces/physical-verification.interface';
+import type { PhysicalVerificationPriority } from '../interfaces/physical-verification-visit.interface';
 
 @Entity('physical_verifications')
 export class PhysicalVerification {
@@ -54,6 +57,12 @@ export class PhysicalVerification {
 
   @Column({ type: 'varchar', length: 50, default: 'DRAFT' })
   status: PhysicalVerificationStatus;
+
+  @Column({ type: 'varchar', length: 20, default: 'MEDIUM' })
+  priority: PhysicalVerificationPriority;
+
+  @OneToMany(() => PhysicalVerificationVisit, (visit) => visit.parent)
+  visits: PhysicalVerificationVisit[];
 
   @Column({ name: 'report_generated_at', type: 'timestamp', nullable: true })
   reportGeneratedAt: Date | null;

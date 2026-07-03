@@ -30,6 +30,8 @@ import { buildPhysicalReport } from './helpers/build-report.helper';
 import { User } from '../user/entities/user.entity';
 import { FieldAssistant } from '../field-assistance/entities/field-assistant.entity';
 import { FieldAgentWalletService } from '../field-agent-wallet/field-agent-wallet.service';
+import { PhysicalVerificationVisitService } from './physical-verification-visit.service';
+import { PhysicalVerificationVisit } from './entities/physical-verification-visit.entity';
 
 type AuthedUser = { role: Role; clientId?: string; sub?: string };
 
@@ -63,6 +65,7 @@ export class PhysicalVerificationService {
     @InjectRepository(FieldAssistant)
     private fieldAssistantRepo: Repository<FieldAssistant>,
     private fieldAgentWalletService: FieldAgentWalletService,
+    private visitService: PhysicalVerificationVisitService,
   ) {}
 
   private normalizeOptional(value?: string | null): string | null {
@@ -111,6 +114,7 @@ export class PhysicalVerificationService {
       coApplicant: dto.hasCoApplicant ? coApplicant : emptyParty(),
       completeRemark: this.normalizeOptional(dto.completeRemark),
       documentTypeVerifications: (dto.documentTypeVerifications ?? []) as DocumentTypeVerification[],
+      priority: dto.priority ?? existing?.priority ?? 'MEDIUM',
     };
   }
 
@@ -348,21 +352,27 @@ export class PhysicalVerificationService {
     user: AuthedUser,
   ): Promise<APIResponseInterface<PhysicalVerification>> {
     const record = await this.findOwned(id, user);
+    const visits = await this.visitService.getVisitsForParentId(record.id);
+    const payload = { ...record, visits } as PhysicalVerification & {
+      visits: PhysicalVerificationVisit[];
+    };
     if (user.role === Role.SUPER_ADMIN) {
       const withClient = await this.repo.findOne({
         where: { id: record.id },
-        relations: ['client'],
+        relations: ['client', 'visits'],
       });
       return {
         code: HttpStatus.OK,
         message: 'Physical verification fetched successfully',
-        data: withClient ?? record,
+        data: { ...(withClient ?? record), visits } as PhysicalVerification & {
+          visits: PhysicalVerificationVisit[];
+        },
       };
     }
     return {
       code: HttpStatus.OK,
       message: 'Physical verification fetched successfully',
-      data: record,
+      data: payload,
     };
   }
 
@@ -417,17 +427,28 @@ export class PhysicalVerificationService {
     }
     record.status = 'IN_PROGRESS';
     const saved = await this.repo.save(record);
+    await this.visitService.createVisitsForParent(saved, user.sub);
+    const withVisits = await this.visitService.getVisitsForParentId(saved.id);
+    await this.syncParentFromVisits(saved.id);
+    const refreshed = await this.repo.findOne({ where: { id: saved.id } });
     await this.addLog(
       saved.id,
       'SUBMITTED',
-      'Case submitted for physical verification',
+      `Case submitted with ${withVisits.length} address visit(s) for field verification`,
       user.sub,
+      { visitCount: withVisits.length },
     );
     return {
       code: HttpStatus.OK,
       message: 'Physical verification submitted for field processing',
-      data: saved,
+      data: { ...(refreshed ?? saved), visits: withVisits } as PhysicalVerification & {
+        visits: PhysicalVerificationVisit[];
+      },
     };
+  }
+
+  private async syncParentFromVisits(parentId: string): Promise<void> {
+    await this.visitService.syncParentFromVisits(parentId);
   }
 
   async assignFieldAgent(
@@ -806,18 +827,21 @@ export class PhysicalVerificationService {
       };
     }
 
-    if (!['AGENT_SUBMITTED', 'APPROVED'].includes(record.status)) {
+    const visits = await this.visitService.getVisitsForParentId(record.id);
+    if (visits.length) {
+      await this.visitService.assertAllVisitsApproved(record.id);
+    } else if (!['AGENT_SUBMITTED', 'APPROVED'].includes(record.status)) {
       throw new BadRequestException(
         'Case must be submitted by field agent or approved before completion',
       );
     }
 
-    record.reportPayload = buildPhysicalReport(record);
+    record.reportPayload = buildPhysicalReport(record, visits);
     record.status = 'REPORT_GENERATED';
     record.reportGeneratedAt = new Date();
     const saved = await this.repo.save(record);
 
-    await this.fieldAgentWalletService.creditForPhysicalCompletion(saved);
+    await this.fieldAgentWalletService.creditForPhysicalCompletion(saved, visits);
 
     const performerName = await this.resolvePerformerName(user.sub);
     await this.addLog(

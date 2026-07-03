@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { APIResponseInterface } from '../../interface/response.interface';
 import { FieldAssistant } from './entities/field-assistant.entity';
 import { ListFieldAssistantsQueryDto } from './dto/list-field-assistants-query.dto';
@@ -276,6 +276,230 @@ export class FieldAssistanceService {
     };
   }
 
+  private mapAddresses(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantAddress[] {
+    return (dto.addresses || []).map((a) =>
+      Object.assign(new FieldAssistantAddress(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        addressType: a.addressType,
+        completeAddress: a.completeAddress,
+        landmark: a.landmark?.trim() || null,
+        city: a.city,
+        state: a.state,
+        country: a.country,
+        postalCode: a.postalCode,
+      }),
+    );
+  }
+
+  private mapEmergencyContacts(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantEmergencyContact[] {
+    return (dto.emergencyDetails || []).map((e) =>
+      Object.assign(new FieldAssistantEmergencyContact(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        name: e.name,
+        relationship: e.relationship,
+        landline: e.landline?.trim() || null,
+        mobile: e.mobile,
+      }),
+    );
+  }
+
+  private mapEducation(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantEducation[] {
+    return (dto.educationDetails || []).map((e) =>
+      Object.assign(new FieldAssistantEducation(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        educationCategory: e.educationCategory,
+        educationType: e.educationType,
+        specialization: e.specialization?.trim() || null,
+        institute: e.institute,
+        country: e.country?.trim() || null,
+        from: e.from,
+        to: e.to,
+        partOrFullTime: e.partOrFullTime ?? null,
+      }),
+    );
+  }
+
+  private mapBankAccounts(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantBankAccount[] {
+    return (dto.bankDetails || []).map((b) =>
+      Object.assign(new FieldAssistantBankAccount(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        bankName: b.bankName,
+        accountNumber: b.accountNumber,
+        accountType: b.accountType?.trim() || null,
+        branch: b.branch?.trim() || null,
+        ifsc: b.ifsc,
+        upiId: b.upiId?.trim() || null,
+        status: b.status as any,
+      }),
+    );
+  }
+
+  private mapFamilyMembers(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantFamilyMember[] {
+    return (dto.familyDetails || []).map((f) =>
+      Object.assign(new FieldAssistantFamilyMember(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        name: f.name,
+        relationship: f.relationship,
+        dateOfBirth: f.dateOfBirth,
+        emailId: f.emailId?.trim() || null,
+        gender: f.gender,
+        nationality: f.nationality?.trim() || null,
+        mobile: f.mobile?.trim() || null,
+      }),
+    );
+  }
+
+  private mapIdentifications(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantIdentification[] {
+    return (dto.identificationDetails || []).map((i) =>
+      Object.assign(new FieldAssistantIdentification(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        identificationType: i.identificationType as any,
+        identificationNo: i.identificationNo,
+        uploadDocument: i.uploadDocument?.trim() || null,
+      }),
+    );
+  }
+
+  private mapPreviousEmployment(
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): FieldAssistantPreviousEmployment[] {
+    return (dto.previousEmploymentDetails || []).map((p) =>
+      Object.assign(new FieldAssistantPreviousEmployment(), {
+        fieldAssistantId,
+        createdBy: userId ?? null,
+        updatedBy: userId ?? null,
+        organization: p.organization,
+        designationOrRole: p.designationOrRole,
+        partOrFullTime: p.partOrFullTime ?? null,
+        from: p.from,
+        to: p.to,
+        totalWorkExperienceYrs:
+          p.totalWorkExperienceYrs != null ? Number(p.totalWorkExperienceYrs) : null,
+        city: p.city,
+        country: p.country,
+        hrMailId: p.hrMailId?.trim() || null,
+        hrContactNo: p.hrContactNo?.trim() || null,
+      }),
+    );
+  }
+
+  /**
+   * Replace all nested rows on update.
+   * TypeORM cascade replace tries to NULL the FK on orphaned rows, which fails
+   * because field_assistant_id is NOT NULL — so delete then insert explicitly.
+   */
+  private async replaceNestedDetails(
+    manager: EntityManager,
+    fieldAssistantId: string,
+    userId: string | undefined,
+    dto: UpsertFieldAssistantDto,
+  ): Promise<void> {
+    await manager.delete(FieldAssistantAddress, { fieldAssistantId });
+    await manager.delete(FieldAssistantEmergencyContact, { fieldAssistantId });
+    await manager.delete(FieldAssistantEducation, { fieldAssistantId });
+    await manager.delete(FieldAssistantBankAccount, { fieldAssistantId });
+    await manager.delete(FieldAssistantFamilyMember, { fieldAssistantId });
+    await manager.delete(FieldAssistantIdentification, { fieldAssistantId });
+    await manager.delete(FieldAssistantPreviousEmployment, { fieldAssistantId });
+
+    const addresses = this.mapAddresses(fieldAssistantId, userId, dto);
+    if (addresses.length) await manager.save(FieldAssistantAddress, addresses);
+
+    const emergency = this.mapEmergencyContacts(fieldAssistantId, userId, dto);
+    if (emergency.length) await manager.save(FieldAssistantEmergencyContact, emergency);
+
+    const education = this.mapEducation(fieldAssistantId, userId, dto);
+    if (education.length) await manager.save(FieldAssistantEducation, education);
+
+    const banks = this.mapBankAccounts(fieldAssistantId, userId, dto);
+    if (banks.length) await manager.save(FieldAssistantBankAccount, banks);
+
+    const family = this.mapFamilyMembers(fieldAssistantId, userId, dto);
+    if (family.length) await manager.save(FieldAssistantFamilyMember, family);
+
+    const identifications = this.mapIdentifications(fieldAssistantId, userId, dto);
+    if (identifications.length) await manager.save(FieldAssistantIdentification, identifications);
+
+    const previous = this.mapPreviousEmployment(fieldAssistantId, userId, dto);
+    if (previous.length) await manager.save(FieldAssistantPreviousEmployment, previous);
+  }
+
+  private applyScalarFields(
+    fa: FieldAssistant,
+    dto: UpsertFieldAssistantDto,
+    userId?: string,
+  ): void {
+    fa.updatedBy = userId ?? fa.updatedBy ?? null;
+    fa.firstName = dto.firstName.trim();
+    fa.middleName = dto.middleName?.trim() || null;
+    fa.lastName = dto.lastName.trim();
+    fa.fullName =
+      dto.fullName?.trim() ||
+      [dto.firstName, dto.middleName, dto.lastName].filter(Boolean).join(' ');
+    fa.dateOfBirth = dto.dateOfBirth;
+    fa.age = this.calculateAge(dto.dateOfBirth);
+    fa.maritalStatus = (dto.maritalStatus as any) ?? null;
+    fa.marriageDate = dto.marriageDate ?? null;
+    fa.gender = dto.gender as any;
+    fa.bloodGroup = dto.bloodGroup?.trim() || null;
+    fa.nationality = dto.nationality?.trim() || null;
+
+    fa.officeMobile = dto.officeContact?.mobile?.trim() || null;
+    fa.officeEmailId = dto.officeContact?.emailId?.trim() || null;
+    fa.personalMobile = dto.personalContact?.mobile?.trim() || null;
+    fa.personalEmailId = dto.personalContact?.emailId?.trim() || null;
+
+    fa.partTimeOrFullTime = dto.partTimeOrFullTime ?? null;
+    fa.fieldOrChoiceDepartment = dto.fieldOrChoiceDepartment ?? null;
+
+    fa.previousEmploymentType = (dto.previousEmploymentType as any) ?? null;
+    fa.documentUploads = dto.documentUploads ?? null;
+
+    fa.status = dto.status as any;
+    fa.assignCompanyClient = dto.assignCompanyClient ?? null;
+    fa.reportingManager = dto.reportingManager ?? null;
+    fa.joiningDate = dto.joiningDate ?? null;
+    fa.remarks = dto.remarks ?? null;
+  }
+
   /**
    * Listing API with search/sort/pagination.
    * Search supports: fullName, firstName, lastName, fieldAgentId, office/personal mobile/email.
@@ -351,7 +575,19 @@ export class FieldAssistanceService {
     this.validateAgeGte18(dto.dateOfBirth);
     this.validateSingleActiveBankAccount(dto.bankDetails || []);
 
-    const fa = await this.repo.findOne({
+    const fa = await this.repo.findOne({ where: { id } });
+    if (!fa) throw new NotFoundException('Field assistant not found');
+
+    this.applyScalarFields(fa, dto, userId);
+
+    await this.repo.manager.transaction(async (manager) => {
+      await manager.save(FieldAssistant, fa);
+      await this.replaceNestedDetails(manager, fa.id, userId, dto);
+    });
+
+    await this.syncLoginAccount(fa, dto);
+
+    const saved = await this.repo.findOne({
       where: { id },
       relations: [
         'addresses',
@@ -363,139 +599,11 @@ export class FieldAssistanceService {
         'previousEmploymentDetails',
       ],
     });
-    if (!fa) throw new NotFoundException('Field assistant not found');
 
-    // Field Agent ID is generated by backend; it cannot be edited.
-
-    fa.updatedBy = userId ?? fa.updatedBy ?? null;
-    fa.firstName = dto.firstName.trim();
-    fa.middleName = dto.middleName?.trim() || null;
-    fa.lastName = dto.lastName.trim();
-    fa.fullName =
-      dto.fullName?.trim() ||
-      [dto.firstName, dto.middleName, dto.lastName].filter(Boolean).join(' ');
-    fa.dateOfBirth = dto.dateOfBirth;
-    fa.age = this.calculateAge(dto.dateOfBirth);
-    fa.maritalStatus = (dto.maritalStatus as any) ?? null;
-    fa.marriageDate = dto.marriageDate ?? null;
-    fa.gender = dto.gender as any;
-    fa.bloodGroup = dto.bloodGroup?.trim() || null;
-    fa.nationality = dto.nationality?.trim() || null;
-
-    fa.officeMobile = dto.officeContact?.mobile?.trim() || null;
-    fa.officeEmailId = dto.officeContact?.emailId?.trim() || null;
-    fa.personalMobile = dto.personalContact?.mobile?.trim() || null;
-    fa.personalEmailId = dto.personalContact?.emailId?.trim() || null;
-
-    fa.partTimeOrFullTime = dto.partTimeOrFullTime ?? null;
-    fa.fieldOrChoiceDepartment = dto.fieldOrChoiceDepartment ?? null;
-
-    fa.previousEmploymentType = (dto.previousEmploymentType as any) ?? null;
-    fa.documentUploads = dto.documentUploads ?? null;
-
-    // keep existing fieldAgentId
-    fa.status = dto.status as any;
-    fa.assignCompanyClient = dto.assignCompanyClient ?? null;
-    fa.reportingManager = dto.reportingManager ?? null;
-    fa.joiningDate = dto.joiningDate ?? null;
-    fa.remarks = dto.remarks ?? null;
-
-    fa.addresses = (dto.addresses || []).map((a) =>
-      Object.assign(new FieldAssistantAddress(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        addressType: a.addressType,
-        completeAddress: a.completeAddress,
-        landmark: a.landmark?.trim() || null,
-        city: a.city,
-        state: a.state,
-        country: a.country,
-        postalCode: a.postalCode,
-      }),
-    );
-    fa.emergencyDetails = (dto.emergencyDetails || []).map((e) =>
-      Object.assign(new FieldAssistantEmergencyContact(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        name: e.name,
-        relationship: e.relationship,
-        landline: e.landline?.trim() || null,
-        mobile: e.mobile,
-      }),
-    );
-    fa.educationDetails = (dto.educationDetails || []).map((e) =>
-      Object.assign(new FieldAssistantEducation(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        educationCategory: e.educationCategory,
-        educationType: e.educationType,
-        specialization: e.specialization?.trim() || null,
-        institute: e.institute,
-        country: e.country?.trim() || null,
-        from: e.from,
-        to: e.to,
-        partOrFullTime: e.partOrFullTime ?? null,
-      }),
-    );
-    fa.bankDetails = (dto.bankDetails || []).map((b) =>
-      Object.assign(new FieldAssistantBankAccount(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        bankName: b.bankName,
-        accountNumber: b.accountNumber,
-        accountType: b.accountType?.trim() || null,
-        branch: b.branch?.trim() || null,
-        ifsc: b.ifsc,
-        upiId: b.upiId?.trim() || null,
-        status: b.status as any,
-      }),
-    );
-    fa.familyDetails = (dto.familyDetails || []).map((f) =>
-      Object.assign(new FieldAssistantFamilyMember(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        name: f.name,
-        relationship: f.relationship,
-        dateOfBirth: f.dateOfBirth,
-        emailId: f.emailId?.trim() || null,
-        gender: f.gender,
-        nationality: f.nationality?.trim() || null,
-        mobile: f.mobile?.trim() || null,
-      }),
-    );
-    fa.identificationDetails = (dto.identificationDetails || []).map((i) =>
-      Object.assign(new FieldAssistantIdentification(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        identificationType: i.identificationType as any,
-        identificationNo: i.identificationNo,
-        uploadDocument: i.uploadDocument?.trim() || null,
-      }),
-    );
-    fa.previousEmploymentDetails = (dto.previousEmploymentDetails || []).map((p) =>
-      Object.assign(new FieldAssistantPreviousEmployment(), {
-        createdBy: userId ?? null,
-        updatedBy: userId ?? null,
-        organization: p.organization,
-        designationOrRole: p.designationOrRole,
-        partOrFullTime: p.partOrFullTime ?? null,
-        from: p.from,
-        to: p.to,
-        totalWorkExperienceYrs:
-          p.totalWorkExperienceYrs != null ? Number(p.totalWorkExperienceYrs) : null,
-        city: p.city,
-        country: p.country,
-        hrMailId: p.hrMailId?.trim() || null,
-        hrContactNo: p.hrContactNo?.trim() || null,
-      }),
-    );
-
-    const saved = await this.repo.save(fa);
-    await this.syncLoginAccount(saved, dto);
     return {
       code: HttpStatus.OK,
       message: 'Field assistant updated successfully',
-      data: saved,
+      data: saved!,
     };
   }
 
