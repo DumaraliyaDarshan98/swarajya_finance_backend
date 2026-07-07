@@ -4,8 +4,8 @@ import { Role } from './entities/role.entity';
 import { RolePermission } from './entities/role-permission.entity';
 import { AppModule } from '../module/entities/app-module.entity';
 import { Client } from '../client/entities/client.entity';
-import { RolesService } from './roles.service';
-import { RolesController } from './roles.controller';
+import { RolesService } from './services/roles.service';
+import { RolesController } from './controllers/roles.controller';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Role, RolePermission, AppModule, Client])],

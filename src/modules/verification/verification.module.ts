@@ -2,10 +2,10 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MulterModule } from '@nestjs/platform-express';
 import { VerificationRequest } from './entities/verification-request.entity';
-import { VerificationController } from './verification.controller';
-import { VerificationService } from './verification.service';
-import { OcrController } from './ocr.controller';
-import { OcrService } from './ocr.service';
+import { VerificationController } from './controllers/verification.controller';
+import { VerificationService } from './services/verification.service';
+import { OcrController } from './controllers/ocr.controller';
+import { OcrService } from './services/ocr.service';
 
 @Module({
   imports: [

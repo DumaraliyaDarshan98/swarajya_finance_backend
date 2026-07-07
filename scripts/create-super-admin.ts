@@ -17,7 +17,7 @@ import * as bcrypt from 'bcrypt';
 import { DataSource } from 'typeorm';
 import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { User } from '../src/modules/user/entities/user.entity';
-import { Role } from '../src/enum/role.enum';
+import { Role } from '../src/common/enums/role.enum';
 
 const SUPER_ADMIN_EMAIL = 'superadmin@gmail.com';
 const SUPER_ADMIN_PASSWORD = 'Test@123';

@@ -5,7 +5,7 @@ import {
   ManyToOne,
   Unique,
 } from 'typeorm';
-import { Permission } from '../../../enum/permission.enum';
+import { Permission } from '../../../common/enums/permission.enum';
 import { Role } from './role.entity';
 import { AppModule } from '../../module/entities/app-module.entity';
 

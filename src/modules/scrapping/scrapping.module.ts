@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { ScrappingController } from './scrapping.controller';
-import { ScrappingService } from './scrapping.service';
+import { ScrappingController } from './controllers/scrapping.controller';
+import { ScrappingService } from './services/scrapping.service';
 
 @Module({
   controllers: [ScrappingController],

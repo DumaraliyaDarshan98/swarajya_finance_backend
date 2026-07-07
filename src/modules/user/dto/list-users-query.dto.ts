@@ -8,7 +8,7 @@ import {
   IsUUID,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { Role } from '../../../enum/role.enum';
+import { Role } from '../../../common/enums/role.enum';
 
 export class ListUsersQueryDto {
   @IsOptional()

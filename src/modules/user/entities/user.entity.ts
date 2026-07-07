@@ -5,7 +5,7 @@ import {
   ManyToOne,
   CreateDateColumn,
 } from 'typeorm';
-import { Role } from '../../../enum/role.enum';
+import { Role } from '../../../common/enums/role.enum';
 import { Client } from '../../client/entities/client.entity';
 import { Role as RoleEntity } from '../../role/entities/role.entity';
 

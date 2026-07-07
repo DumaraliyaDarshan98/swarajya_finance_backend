@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DigitalVerification } from './entities/digital-verification.entity';
-import { DigitalVerificationController } from './digital-verification.controller';
-import { DigitalVerificationService } from './digital-verification.service';
+import { DigitalVerificationController } from './controllers/digital-verification.controller';
+import { DigitalVerificationService } from './services/digital-verification.service';
 import { ScrappingModule } from '../scrapping/scrapping.module';
 
 @Module({

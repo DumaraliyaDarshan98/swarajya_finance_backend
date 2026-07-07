@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { FieldAssistanceController } from './field-assistance.controller';
-import { FieldAssistanceService } from './field-assistance.service';
+import { FieldAssistanceController } from './controllers/field-assistance.controller';
+import { FieldAssistanceService } from './services/field-assistance.service';
 import { FieldAssistant } from './entities/field-assistant.entity';
 import { FieldAssistantAddress } from './entities/field-assistant-address.entity';
 import { FieldAssistantEmergencyContact } from './entities/field-assistant-emergency-contact.entity';
