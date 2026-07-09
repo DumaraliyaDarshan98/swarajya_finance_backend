@@ -56,15 +56,26 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    let fieldAgentProfile: { fieldAgentId?: string | null } | null = null;
+    let fieldAgentProfile: {
+      fieldAgentId?: string | null;
+      isAcceptTermAndCondition?: boolean;
+    } | null = null;
     if (user.role === Role.FIELD_AGENT) {
       const fa = await this.fieldAssistanceService.findByUserId(user.id);
       if (!fa || fa.status !== 'Active') {
+        if (fa?.status === 'Pending') {
+          throw new UnauthorizedException(
+            'Your registration is pending super admin approval',
+          );
+        }
         throw new UnauthorizedException(
           'Field agent account is inactive or not found',
         );
       }
-      fieldAgentProfile = { fieldAgentId: fa.fieldAgentId };
+      fieldAgentProfile = {
+        fieldAgentId: fa.fieldAgentId,
+        isAcceptTermAndCondition: !!fa.isAcceptTermAndCondition,
+      };
     }
 
     const permissions = this.getUserPermissions(user);

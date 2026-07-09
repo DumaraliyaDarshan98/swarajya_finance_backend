@@ -79,7 +79,7 @@ export class FieldAssistanceController {
   @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,
-    @Body() body: { status: 'Active' | 'Inactive' },
+    @Body() body: { status: 'Active' | 'Inactive' | 'Pending' },
     @Request() req: any,
   ) {
     return this.service.updateStatus(id, body.status, req.user?.sub);

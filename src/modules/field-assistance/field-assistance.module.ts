@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { FieldAssistanceController } from './controllers/field-assistance.controller';
+import { FieldAssistancePublicController } from './controllers/field-assistance-public.controller';
+import { FieldAgentPortalController } from './controllers/field-agent-portal.controller';
 import { FieldAssistanceService } from './services/field-assistance.service';
 import { FieldAssistant } from './entities/field-assistant.entity';
 import { FieldAssistantAddress } from './entities/field-assistant-address.entity';
@@ -30,7 +32,7 @@ import { MailModule } from '../mail/mail.module';
     UserModule,
     MailModule,
   ],
-  controllers: [FieldAssistanceController],
+  controllers: [FieldAssistanceController, FieldAssistancePublicController, FieldAgentPortalController],
   providers: [FieldAssistanceService],
   exports: [FieldAssistanceService],
 })

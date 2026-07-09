@@ -15,7 +15,7 @@ import { FieldAssistantFamilyMember } from './field-assistant-family-member.enti
 import { FieldAssistantIdentification } from './field-assistant-identification.entity';
 import { FieldAssistantPreviousEmployment } from './field-assistant-previous-employment.entity';
 
-export type FieldAssistanceStatus = 'Active' | 'Inactive';
+export type FieldAssistanceStatus = 'Active' | 'Inactive' | 'Pending';
 export type FieldAssistanceGender = 'Male' | 'Female' | 'Other';
 export type FieldAssistanceMaritalStatus =
   | 'Single'
@@ -157,7 +157,7 @@ export class FieldAssistant {
   @Index({ unique: true })
   fieldAgentId: string | null;
 
-  @Column({ name: 'status', type: 'varchar', length: 10, default: 'Active' })
+  @Column({ name: 'status', type: 'varchar', length: 12, default: 'Active' })
   status: FieldAssistanceStatus;
 
   @Column({ name: 'assign_company_client', type: 'varchar', length: 50, nullable: true })
@@ -171,6 +171,12 @@ export class FieldAssistant {
 
   @Column({ name: 'remarks', type: 'text', nullable: true })
   remarks: string | null;
+
+  @Column({ name: 'is_accept_term_and_condition', type: 'boolean', default: false })
+  isAcceptTermAndCondition: boolean;
+
+  @Column({ name: 'terms_accepted_at', type: 'datetime', nullable: true })
+  termsAcceptedAt: Date | null;
 
   // ===== Relations (multiple records stored in separate tables) =====
   @OneToMany(() => FieldAssistantAddress, (x) => x.fieldAssistant, {

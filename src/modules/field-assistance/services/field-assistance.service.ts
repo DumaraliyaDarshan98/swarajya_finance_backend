@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpStatus,
   Injectable,
   NotFoundException,
@@ -20,6 +21,80 @@ import { FieldAssistantPreviousEmployment } from '../entities/field-assistant-pr
 import { FieldAssistantIdSequence } from '../entities/field-assistant-id-sequence.entity';
 import { UsersService } from '../../user/services/users.service';
 import { MailService } from '../../mail/services/mail.service';
+import { PHYSICAL_CASE_REWARD_AMOUNT } from '../../field-agent-wallet/constants';
+
+export interface FieldAgentOnboardingPayload {
+  isAcceptTermAndCondition: boolean;
+  profile: {
+    fieldAgentId: string | null;
+    fullName: string;
+    joiningDate: string | null;
+    reportingManager: string | null;
+    partTimeOrFullTime: string | null;
+    fieldOrChoiceDepartment: string | null;
+    officeEmailId: string | null;
+    officeMobile: string | null;
+  };
+  termsAndConditions: {
+    title: string;
+    version: string;
+    content: string;
+  };
+  offerLetter: {
+    referenceNo: string;
+    issueDate: string;
+    position: string;
+    department: string;
+    employmentType: string;
+    reportingTo: string;
+    content: string;
+  };
+  joinDateConfirm: {
+    joiningDate: string | null;
+    reportingManager: string | null;
+    workLocation: string;
+    confirmationNote: string;
+  };
+  petrolRate: {
+    ratePerKm: number;
+    currency: string;
+    effectiveFrom: string;
+    reimbursementCycle: string;
+    note: string;
+  };
+  jobProfile: {
+    role: string;
+    department: string;
+    responsibilities: string[];
+    workingHours: string;
+    toolsProvided: string[];
+  };
+  perCaseRate: {
+    amount: number;
+    currency: string;
+    caseType: string;
+    paymentTimeline: string;
+    note: string;
+  };
+  salarySlip: {
+    month: string;
+    employeeName: string;
+    employeeId: string | null;
+    grossSalary: number;
+    deductions: number;
+    netSalary: number;
+    note: string;
+  };
+  incentivePerformance: {
+    period: string;
+    completedCases: number;
+    targetCases: number;
+    bonusEligible: boolean;
+    incentiveAmount: number;
+    performanceNote: string;
+    tiers: Array<{ label: string; cases: number; bonus: number }>;
+  };
+}
 
 @Injectable()
 export class FieldAssistanceService {
@@ -76,11 +151,42 @@ export class FieldAssistanceService {
     return this.repo.findOne({ where: { userId } });
   }
 
-  private async provisionLoginAccount(
-    saved: FieldAssistant,
-    dto: UpsertFieldAssistantDto,
-  ): Promise<FieldAssistant> {
+  private resolveLoginEmailFromEntity(fa: FieldAssistant): string | null {
+    return fa.officeEmailId?.trim() || fa.personalEmailId?.trim() || null;
+  }
+
+  private async assertRegistrationEmailAvailable(dto: UpsertFieldAssistantDto): Promise<string> {
     const loginEmail = this.resolveLoginEmail(dto);
+    if (!loginEmail) {
+      throw new BadRequestException(
+        'Office or personal email is required for field agent registration',
+      );
+    }
+    const normalized = loginEmail.trim().toLowerCase();
+    const existingUser = await this.usersService.findByEmail(normalized);
+    if (existingUser) {
+      throw new ConflictException('An account with this email already exists');
+    }
+
+    const existingApplication = await this.repo
+      .createQueryBuilder('fa')
+      .where(
+        '(LOWER(fa.office_email_id) = :email OR LOWER(fa.personal_email_id) = :email)',
+        { email: normalized },
+      )
+      .andWhere('fa.status IN (:...statuses)', { statuses: ['Pending', 'Active'] })
+      .getOne();
+    if (existingApplication) {
+      throw new ConflictException('A field agent application with this email already exists');
+    }
+    return normalized;
+  }
+
+  private async provisionLoginAccountFromEntity(
+    saved: FieldAssistant,
+    approved = false,
+  ): Promise<FieldAssistant> {
+    const loginEmail = this.resolveLoginEmailFromEntity(saved);
     if (!loginEmail) {
       throw new BadRequestException(
         'Office or personal email is required to create a field agent login account',
@@ -101,12 +207,20 @@ export class FieldAssistanceService {
         linked.fullName || linked.firstName,
         linked.fieldAgentId || '',
         plainPassword,
+        approved,
       );
     } catch {
       // Profile and user are created; mail failure should not roll back.
     }
 
     return linked;
+  }
+
+  async selfRegister(
+    dto: UpsertFieldAssistantDto,
+  ): Promise<APIResponseInterface<FieldAssistant>> {
+    await this.assertRegistrationEmailAvailable(dto);
+    return this.create(dto, undefined, { provisionLogin: false, status: 'Pending' });
   }
 
   private async syncLoginAccount(
@@ -131,9 +245,17 @@ export class FieldAssistanceService {
   async create(
     dto: UpsertFieldAssistantDto,
     userId?: string,
+    options?: { provisionLogin?: boolean; status?: 'Active' | 'Inactive' | 'Pending' },
   ): Promise<APIResponseInterface<FieldAssistant>> {
     this.validateAgeGte18(dto.dateOfBirth);
     this.validateSingleActiveBankAccount(dto.bankDetails || []);
+
+    const status = options?.status ?? (dto.status as FieldAssistant['status']) ?? 'Active';
+    const shouldProvisionLogin = options?.provisionLogin ?? status === 'Active';
+
+    if (shouldProvisionLogin) {
+      await this.assertRegistrationEmailAvailable(dto);
+    }
 
     // Generate next sequence number from DB (AUTO_INCREMENT).
     const seqRow = await this.seqRepo.save(this.seqRepo.create({}));
@@ -169,7 +291,7 @@ export class FieldAssistanceService {
       documentUploads: dto.documentUploads ?? null,
 
       fieldAgentId: this.formatFieldAgentId(nextSeq),
-      status: dto.status as any,
+      status,
       assignCompanyClient: dto.assignCompanyClient ?? null,
       reportingManager: dto.reportingManager ?? null,
       joiningDate: dto.joiningDate ?? null,
@@ -267,12 +389,23 @@ export class FieldAssistanceService {
     });
 
     const saved = await this.repo.save(entity);
-    const withLogin = await this.provisionLoginAccount(saved, dto);
+    if (shouldProvisionLogin) {
+      const withLogin = await this.provisionLoginAccountFromEntity(saved);
+      return {
+        code: HttpStatus.CREATED,
+        message:
+          'Field assistant created successfully. Login credentials have been emailed.',
+        data: withLogin,
+      };
+    }
+
     return {
       code: HttpStatus.CREATED,
       message:
-        'Field assistant created successfully. Login credentials have been emailed.',
-      data: withLogin,
+        status === 'Pending'
+          ? 'Field agent registration submitted successfully. You will receive login credentials after super admin approval.'
+          : 'Field assistant created successfully.',
+      data: saved,
     };
   }
 
@@ -629,11 +762,37 @@ export class FieldAssistanceService {
    */
   async updateStatus(
     id: string,
-    status: 'Active' | 'Inactive',
+    status: 'Active' | 'Inactive' | 'Pending',
     userId?: string,
   ): Promise<APIResponseInterface<FieldAssistant>> {
     const fa = await this.repo.findOne({ where: { id } });
     if (!fa) throw new NotFoundException('Field assistant not found');
+
+    if (fa.status === 'Pending' && status === 'Active') {
+      fa.status = 'Active';
+      fa.updatedBy = userId ?? fa.updatedBy ?? null;
+      let saved = await this.repo.save(fa);
+      if (!saved.userId) {
+        saved = await this.provisionLoginAccountFromEntity(saved, true);
+      }
+      return {
+        code: HttpStatus.OK,
+        message: 'Field agent approved successfully. Login credentials have been emailed.',
+        data: saved,
+      };
+    }
+
+    if (fa.status === 'Pending' && status === 'Inactive') {
+      fa.status = 'Inactive';
+      fa.updatedBy = userId ?? fa.updatedBy ?? null;
+      const saved = await this.repo.save(fa);
+      return {
+        code: HttpStatus.OK,
+        message: 'Field agent registration rejected',
+        data: saved,
+      };
+    }
+
     fa.status = status;
     fa.updatedBy = userId ?? fa.updatedBy ?? null;
     const saved = await this.repo.save(fa);
@@ -641,6 +800,164 @@ export class FieldAssistanceService {
       code: HttpStatus.OK,
       message: 'Status updated successfully',
       data: saved,
+    };
+  }
+
+  private buildOnboardingPayload(fa: FieldAssistant): FieldAgentOnboardingPayload {
+    const fullName =
+      fa.fullName?.trim() || `${fa.firstName} ${fa.lastName}`.trim();
+    const joiningDate = fa.joiningDate ?? null;
+    const reportingManager = fa.reportingManager ?? 'Operations Manager';
+    const employmentType = fa.partTimeOrFullTime ?? 'Full Time';
+    const department =
+      fa.fieldOrChoiceDepartment === 'Field'
+        ? 'Field Operations'
+        : 'Verification Operations';
+    const perCaseAmount = PHYSICAL_CASE_REWARD_AMOUNT;
+    const issueDate = joiningDate ?? new Date().toISOString().slice(0, 10);
+
+    return {
+      isAcceptTermAndCondition: !!fa.isAcceptTermAndCondition,
+      profile: {
+        fieldAgentId: fa.fieldAgentId,
+        fullName,
+        joiningDate,
+        reportingManager,
+        partTimeOrFullTime: fa.partTimeOrFullTime,
+        fieldOrChoiceDepartment: fa.fieldOrChoiceDepartment,
+        officeEmailId: fa.officeEmailId,
+        officeMobile: fa.officeMobile,
+      },
+      termsAndConditions: {
+        title: 'Field Agent Terms & Conditions',
+        version: '1.0',
+        content: [
+          'You agree to perform assigned verification visits professionally and within agreed timelines.',
+          'All case data, customer information, and reports are confidential and must not be shared outside the platform.',
+          'Geo-tagged photos, attendance, and visit submissions must reflect actual on-site verification.',
+          'Misrepresentation, falsified documents, or incomplete submissions may lead to case rejection and account suspension.',
+          'Petrol reimbursement, per-case earnings, and incentives are governed by company policy and may be revised with notice.',
+          'You must maintain valid identification documents and comply with local laws during field visits.',
+          'The company may audit submitted visits and wallet transactions at any time.',
+          'Continued use of the field agent portal constitutes acceptance of these terms.',
+        ].join('\n\n'),
+      },
+      offerLetter: {
+        referenceNo: `OL/${fa.fieldAgentId ?? fa.id.slice(0, 8).toUpperCase()}`,
+        issueDate,
+        position: 'Field Verification Agent',
+        department,
+        employmentType,
+        reportingTo: reportingManager,
+        content: [
+          `Dear ${fullName},`,
+          '',
+          'We are pleased to offer you the position of Field Verification Agent with Swarajya Finance.',
+          `Your Field Agent ID is ${fa.fieldAgentId ?? 'to be assigned'}.`,
+          `Expected joining date: ${joiningDate ?? 'As communicated by HR'}.`,
+          `You will report to ${reportingManager}.`,
+          '',
+          'This offer is subject to successful document verification and acceptance of company policies through the field agent portal.',
+          '',
+          'We look forward to your contribution to accurate and timely field verifications.',
+        ].join('\n'),
+      },
+      joinDateConfirm: {
+        joiningDate,
+        reportingManager,
+        workLocation: 'Assigned territory / client locations',
+        confirmationNote:
+          'Please confirm that the joining date and reporting details shown above are correct. Contact HR if any correction is required before accepting.',
+      },
+      petrolRate: {
+        ratePerKm: 12,
+        currency: 'INR',
+        effectiveFrom: issueDate,
+        reimbursementCycle: 'Monthly with supporting travel logs',
+        note: 'Petrol reimbursement applies to approved field visits as per company travel policy.',
+      },
+      jobProfile: {
+        role: 'Field Verification Agent',
+        department,
+        responsibilities: [
+          'Accept and complete assigned physical verification cases.',
+          'Capture geo-tagged photographs and accurate visit observations.',
+          'Submit cases for review within SLA timelines.',
+          'Maintain professional conduct with applicants and employers.',
+          'Keep wallet and incentive performance targets in view.',
+        ],
+        workingHours: employmentType === 'Part Time' ? 'Flexible (Part Time)' : '9:30 AM – 6:30 PM',
+        toolsProvided: ['Mobile app access', 'Case assignment portal', 'Wallet & earnings dashboard'],
+      },
+      perCaseRate: {
+        amount: perCaseAmount,
+        currency: 'INR',
+        caseType: 'Physical verification (completed & approved)',
+        paymentTimeline: 'Credited to wallet after case approval',
+        note: `Current standard rate is ₹${perCaseAmount} per successfully completed case.`,
+      },
+      salarySlip: {
+        month: new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' }),
+        employeeName: fullName,
+        employeeId: fa.fieldAgentId,
+        grossSalary: 18000,
+        deductions: 1800,
+        netSalary: 16200,
+        note: 'Sample salary slip for reference. Actual payouts combine fixed components, per-case earnings, and approved incentives.',
+      },
+      incentivePerformance: {
+        period: new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' }),
+        completedCases: 0,
+        targetCases: 20,
+        bonusEligible: false,
+        incentiveAmount: 0,
+        performanceNote:
+          'Complete more cases to unlock performance incentives. Sample tiers are shown below.',
+        tiers: [
+          { label: 'Bronze', cases: 15, bonus: 500 },
+          { label: 'Silver', cases: 25, bonus: 1200 },
+          { label: 'Gold', cases: 40, bonus: 2500 },
+        ],
+      },
+    };
+  }
+
+  async getOnboardingForUser(
+    userId: string,
+  ): Promise<APIResponseInterface<FieldAgentOnboardingPayload>> {
+    const fa = await this.repo.findOne({ where: { userId } });
+    if (!fa) {
+      throw new NotFoundException('Field assistant profile not found');
+    }
+    return {
+      code: HttpStatus.OK,
+      message: 'Field agent onboarding fetched successfully',
+      data: this.buildOnboardingPayload(fa),
+    };
+  }
+
+  async acceptTermsByUserId(
+    userId: string,
+  ): Promise<
+    APIResponseInterface<{
+      isAcceptTermAndCondition: boolean;
+      termsAcceptedAt: string;
+    }>
+  > {
+    const fa = await this.repo.findOne({ where: { userId } });
+    if (!fa) {
+      throw new NotFoundException('Field assistant profile not found');
+    }
+    fa.isAcceptTermAndCondition = true;
+    fa.termsAcceptedAt = new Date();
+    await this.repo.save(fa);
+    return {
+      code: HttpStatus.OK,
+      message: 'Terms and conditions accepted successfully',
+      data: {
+        isAcceptTermAndCondition: true,
+        termsAcceptedAt: fa.termsAcceptedAt.toISOString(),
+      },
     };
   }
 }
