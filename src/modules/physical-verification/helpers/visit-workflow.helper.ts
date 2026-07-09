@@ -66,8 +66,26 @@ export function rollupParentStatus(
   if (visits.some((v) => v.status === 'AGENT_SUBMITTED')) {
     return 'AGENT_SUBMITTED';
   }
-  if (visits.some((v) => ['AGENT_DRAFT', 'AGENT_ASSIGNED'].includes(v.status))) {
-    return visits.some((v) => v.status === 'AGENT_DRAFT') ? 'AGENT_DRAFT' : 'AGENT_ASSIGNED';
+  if (visits.some((v) => v.status === 'AGENT_DRAFT')) {
+    return 'AGENT_DRAFT';
+  }
+
+  const inAssignmentPhase = visits.every((v) =>
+    ['IN_PROGRESS', 'AGENT_ASSIGNED'].includes(v.status),
+  );
+  if (inAssignmentPhase) {
+    const assignedCount = visits.filter((v) => !!v.assignedFieldAgentUserId).length;
+    if (assignedCount > 0) {
+      if (visits.length > 1 && assignedCount < visits.length) {
+        return 'PARTIAL_ASSIGNED';
+      }
+      return 'ASSIGNED';
+    }
+    return 'IN_PROGRESS';
+  }
+
+  if (visits.some((v) => v.status === 'AGENT_ASSIGNED')) {
+    return 'AGENT_ASSIGNED';
   }
   return 'IN_PROGRESS';
 }

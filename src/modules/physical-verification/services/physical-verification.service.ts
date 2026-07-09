@@ -226,9 +226,24 @@ export class PhysicalVerificationService {
   }
 
   private async assertFieldAgentEditable(record: PhysicalVerification): Promise<void> {
+    if (record.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('This verification case is completed');
+    }
     if (!['AGENT_ASSIGNED', 'AGENT_DRAFT'].includes(record.status)) {
       throw new BadRequestException('Field agent submission is locked for this case');
     }
+  }
+
+  private async findRecordForAdminEdit(id: string): Promise<PhysicalVerification> {
+    const record = await this.repo.findOne({ where: { id } });
+    if (!record) throw new NotFoundException('Physical verification not found');
+    if (record.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('This verification case is completed');
+    }
+    if (!['AGENT_SUBMITTED', 'AGENT_DRAFT'].includes(record.status)) {
+      throw new BadRequestException('Verification details cannot be edited in current status');
+    }
+    return record;
   }
 
   private mergeFieldAgentSubmission(
@@ -304,7 +319,10 @@ export class PhysicalVerificationService {
         total,
         draft: byStatus.get('DRAFT') ?? 0,
         inProgress: byStatus.get('IN_PROGRESS') ?? 0,
-        agentAssigned: byStatus.get('AGENT_ASSIGNED') ?? 0,
+        agentAssigned:
+          (byStatus.get('AGENT_ASSIGNED') ?? 0) +
+          (byStatus.get('ASSIGNED') ?? 0) +
+          (byStatus.get('PARTIAL_ASSIGNED') ?? 0),
         agentDraft: byStatus.get('AGENT_DRAFT') ?? 0,
         agentSubmitted: byStatus.get('AGENT_SUBMITTED') ?? 0,
         approved: byStatus.get('APPROVED') ?? 0,
@@ -464,9 +482,14 @@ export class PhysicalVerificationService {
     if (!record) {
       throw new NotFoundException('Physical verification not found');
     }
+    if (record.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('Completed verifications cannot be modified');
+    }
     if (
       ![
         'IN_PROGRESS',
+        'PARTIAL_ASSIGNED',
+        'ASSIGNED',
         'AGENT_ASSIGNED',
         'AGENT_DRAFT',
         'AGENT_SUBMITTED',
@@ -544,8 +567,8 @@ export class PhysicalVerificationService {
     file: UploadedFileLike | undefined,
     user: AuthedUser,
   ): Promise<APIResponseInterface<{ key: string; url: string }>> {
-    if (user.role !== Role.FIELD_AGENT) {
-      throw new ForbiddenException('Only field agents can upload verification files');
+    if (![Role.FIELD_AGENT, Role.SUPER_ADMIN].includes(user.role)) {
+      throw new ForbiddenException('Only field agents or super admin can upload verification files');
     }
     if (!file?.buffer?.length) {
       throw new BadRequestException('File is required');
@@ -557,8 +580,13 @@ export class PhysicalVerificationService {
       throw new BadRequestException('Invalid file type');
     }
 
-    const record = await this.findOwned(id, user);
-    await this.assertFieldAgentEditable(record);
+    const record =
+      user.role === Role.SUPER_ADMIN
+        ? await this.findRecordForAdminEdit(id)
+        : await this.findOwned(id, user);
+    if (user.role === Role.FIELD_AGENT) {
+      await this.assertFieldAgentEditable(record);
+    }
 
     this.ensureUploadDir();
     const ext = extname(file.originalname || '') || '.bin';
@@ -578,24 +606,44 @@ export class PhysicalVerificationService {
     dto: SaveFieldAgentSubmissionDto,
     user: AuthedUser,
   ): Promise<APIResponseInterface<PhysicalVerification>> {
-    if (user.role !== Role.FIELD_AGENT) {
-      throw new ForbiddenException('Only field agents can save verification details');
+    if (![Role.FIELD_AGENT, Role.SUPER_ADMIN].includes(user.role)) {
+      throw new ForbiddenException('Only field agents or super admin can save verification details');
     }
 
-    const record = await this.findOwned(id, user);
-    await this.assertFieldAgentEditable(record);
+    const record =
+      user.role === Role.SUPER_ADMIN
+        ? await this.findRecordForAdminEdit(id)
+        : await this.findOwned(id, user);
 
-    record.fieldAgentSubmission = this.mergeFieldAgentSubmission(record, dto);
-    record.status = 'AGENT_DRAFT';
+    if (user.role === Role.FIELD_AGENT) {
+      await this.assertFieldAgentEditable(record);
+      record.fieldAgentSubmission = this.mergeFieldAgentSubmission(record, dto);
+      record.status = 'AGENT_DRAFT';
+    } else {
+      const preserveStatus = record.status;
+      record.fieldAgentSubmission = this.mergeFieldAgentSubmission(record, dto);
+      record.status = preserveStatus;
+    }
+
     const saved = await this.repo.save(record);
 
-    const performerName = await this.resolvePerformerName(user.sub);
-    await this.addLog(
-      saved.id,
-      'AGENT_DRAFT_SAVED',
-      `${performerName ?? 'Field agent'} saved verification draft`,
-      user.sub,
-    );
+    if (user.role === Role.FIELD_AGENT) {
+      const performerName = await this.resolvePerformerName(user.sub);
+      await this.addLog(
+        saved.id,
+        'AGENT_DRAFT_SAVED',
+        `${performerName ?? 'Field agent'} saved verification draft`,
+        user.sub,
+      );
+    } else {
+      const performerName = await this.resolvePerformerName(user.sub);
+      await this.addLog(
+        saved.id,
+        'AGENT_DRAFT_SAVED',
+        `${performerName ?? 'Super admin'} updated field verification details`,
+        user.sub,
+      );
+    }
 
     return {
       code: HttpStatus.OK,
@@ -748,6 +796,9 @@ export class PhysicalVerificationService {
 
     const record = await this.repo.findOne({ where: { id } });
     if (!record) throw new NotFoundException('Physical verification not found');
+    if (record.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('Completed verifications cannot be approved');
+    }
     if (record.status !== 'AGENT_SUBMITTED') {
       throw new BadRequestException('Only submitted agent verifications can be approved');
     }
@@ -784,6 +835,9 @@ export class PhysicalVerificationService {
 
     const record = await this.repo.findOne({ where: { id } });
     if (!record) throw new NotFoundException('Physical verification not found');
+    if (record.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('Completed verifications cannot be rejected');
+    }
     if (!['AGENT_SUBMITTED', 'APPROVED'].includes(record.status)) {
       throw new BadRequestException('Only submitted or approved verifications can be rejected');
     }

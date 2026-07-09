@@ -116,6 +116,7 @@ export class PhysicalVerificationVisitService {
       .createQueryBuilder('v')
       .leftJoinAndSelect('v.parent', 'parent')
       .where('v.assigned_field_agent_user_id = :agentUserId', { agentUserId: user.sub })
+      .andWhere('v.status != :approvedStatus', { approvedStatus: 'APPROVED' })
       .orderBy('v.updatedAt', 'DESC')
       .skip(skip)
       .take(limit);
@@ -219,12 +220,18 @@ export class PhysicalVerificationVisitService {
     dto: SaveVisitFieldAgentSubmissionDto,
     user: AuthedUser,
   ): Promise<APIResponseInterface<PhysicalVerificationVisit>> {
-    if (user.role !== Role.FIELD_AGENT) {
-      throw new ForbiddenException('Only field agents can save verification details');
+    if (![Role.FIELD_AGENT, Role.SUPER_ADMIN].includes(user.role)) {
+      throw new ForbiddenException('Only field agents or super admin can save verification details');
     }
 
     const visit = await this.findVisitOwned(visitId, user);
-    this.assertVisitEditable(visit);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
+
+    if (user.role === Role.FIELD_AGENT) {
+      this.assertVisitEditable(visit);
+    } else {
+      this.assertVisitEditableByAdmin(visit);
+    }
 
     const existing = visit.fieldAgentSubmission ?? {
       agentLocation: null,
@@ -233,6 +240,7 @@ export class PhysicalVerificationVisitService {
       office: null,
     };
 
+    const preserveStatus = visit.status;
     visit.fieldAgentSubmission = {
       ...existing,
       agentLocation: dto.agentLocation ?? existing.agentLocation,
@@ -247,9 +255,24 @@ export class PhysicalVerificationVisitService {
           : null,
       savedAt: new Date().toISOString(),
     };
-    visit.status = 'AGENT_DRAFT';
+    visit.status =
+      user.role === Role.SUPER_ADMIN && preserveStatus === 'AGENT_SUBMITTED'
+        ? 'AGENT_SUBMITTED'
+        : 'AGENT_DRAFT';
     const saved = await this.visitRepo.save(visit);
     await this.syncParentFromVisits(visit.physicalVerificationId);
+
+    if (user.role === Role.SUPER_ADMIN) {
+      const performerName = await this.resolvePerformerName(user.sub);
+      const label = visit.addressType === 'RESIDENTIAL' ? 'Residential' : 'Office';
+      await this.addLog(
+        visit.physicalVerificationId,
+        saved.id,
+        'AGENT_DRAFT_SAVED',
+        `${performerName ?? 'Super admin'} updated ${label} visit verification details`,
+        user.sub,
+      );
+    }
 
     return {
       code: HttpStatus.OK,
@@ -267,6 +290,7 @@ export class PhysicalVerificationVisitService {
     }
 
     const visit = await this.findVisitOwned(visitId, user);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
     this.assertVisitEditable(visit);
     if (!visit.fieldAgentSubmission) {
       throw new BadRequestException('Please save verification details before submitting');
@@ -293,6 +317,7 @@ export class PhysicalVerificationVisitService {
     user: AuthedUser,
   ): Promise<APIResponseInterface<PhysicalVerificationVisit>> {
     const visit = await this.findVisitOwned(visitId, user);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
     if (user.role === Role.FIELD_AGENT) {
       this.assertVisitEditable(visit);
     } else if (user.role !== Role.SUPER_ADMIN) {
@@ -348,6 +373,7 @@ export class PhysicalVerificationVisitService {
     }
 
     const visit = await this.findVisitOwned(visitId, user);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
     if (visit.status !== 'AGENT_ASSIGNED') {
       throw new BadRequestException('Trip can only be started for newly assigned visits');
     }
@@ -400,6 +426,7 @@ export class PhysicalVerificationVisitService {
     }
 
     const visit = await this.findVisitOwned(visitId, user);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
     if (!visit.fieldAgentSubmission?.agentTracking?.isDriving) {
       throw new BadRequestException('No active trip to end');
     }
@@ -447,6 +474,7 @@ export class PhysicalVerificationVisitService {
     }
 
     const visit = await this.findVisitOwned(visitId, user);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
     if (!['AGENT_ASSIGNED', 'AGENT_DRAFT'].includes(visit.status)) {
       throw new BadRequestException('This visit cannot be removed from your list');
     }
@@ -491,6 +519,13 @@ export class PhysicalVerificationVisitService {
     }
     const visit = await this.visitRepo.findOne({ where: { id: visitId } });
     if (!visit) throw new NotFoundException('Visit not found');
+    const parent = await this.parentRepo.findOne({
+      where: { id: visit.physicalVerificationId },
+    });
+    if (!parent) throw new NotFoundException('Parent case not found');
+    if (parent.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('Parent case is already completed');
+    }
     if (visit.status !== 'AGENT_SUBMITTED') {
       throw new BadRequestException('Only submitted visits can be approved');
     }
@@ -512,6 +547,13 @@ export class PhysicalVerificationVisitService {
     }
     const visit = await this.visitRepo.findOne({ where: { id: visitId } });
     if (!visit) throw new NotFoundException('Visit not found');
+    const parent = await this.parentRepo.findOne({
+      where: { id: visit.physicalVerificationId },
+    });
+    if (!parent) throw new NotFoundException('Parent case not found');
+    if (parent.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('Parent case is already completed');
+    }
     if (!['AGENT_SUBMITTED', 'APPROVED'].includes(visit.status)) {
       throw new BadRequestException('Only submitted or approved visits can be rejected');
     }
@@ -529,8 +571,8 @@ export class PhysicalVerificationVisitService {
     file: UploadedFileLike | undefined,
     user: AuthedUser,
   ): Promise<APIResponseInterface<{ key: string; url: string }>> {
-    if (user.role !== Role.FIELD_AGENT) {
-      throw new ForbiddenException('Only field agents can upload verification files');
+    if (![Role.FIELD_AGENT, Role.SUPER_ADMIN].includes(user.role)) {
+      throw new ForbiddenException('Only field agents or super admin can upload verification files');
     }
     if (!file?.buffer?.length) throw new BadRequestException('File is required');
     if (file.size > MAX_FILE_SIZE) throw new BadRequestException('File exceeds maximum size of 10MB');
@@ -539,7 +581,12 @@ export class PhysicalVerificationVisitService {
     }
 
     const visit = await this.findVisitOwned(visitId, user);
-    this.assertVisitEditable(visit);
+    await this.ensureParentNotCompleted(visit.physicalVerificationId);
+    if (user.role === Role.FIELD_AGENT) {
+      this.assertVisitEditable(visit);
+    } else {
+      this.assertVisitEditableByAdmin(visit);
+    }
 
     if (!existsSync(PHYSICAL_UPLOAD_DIR)) mkdirSync(PHYSICAL_UPLOAD_DIR, { recursive: true });
     const ext = extname(file.originalname || '') || '.bin';
@@ -611,6 +658,19 @@ export class PhysicalVerificationVisitService {
   private assertVisitEditable(visit: PhysicalVerificationVisit): void {
     if (!['AGENT_ASSIGNED', 'AGENT_DRAFT'].includes(visit.status)) {
       throw new BadRequestException('Visit submission is locked');
+    }
+  }
+
+  private assertVisitEditableByAdmin(visit: PhysicalVerificationVisit): void {
+    if (!['AGENT_SUBMITTED', 'AGENT_DRAFT'].includes(visit.status)) {
+      throw new BadRequestException('Visit submission cannot be edited in current status');
+    }
+  }
+
+  private async ensureParentNotCompleted(parentId: string): Promise<void> {
+    const parent = await this.parentRepo.findOne({ where: { id: parentId } });
+    if (parent?.status === 'REPORT_GENERATED') {
+      throw new BadRequestException('This verification case is completed');
     }
   }
 
