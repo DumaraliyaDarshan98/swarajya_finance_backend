@@ -22,6 +22,7 @@ import { DigitalVerificationModule } from './modules/digital-verification/digita
 import { OcrVerificationModule } from './modules/ocr-verification/ocr-verification.module';
 import { PhysicalVerificationModule } from './modules/physical-verification/physical-verification.module';
 import { FieldAgentWalletModule } from './modules/field-agent-wallet/field-agent-wallet.module';
+import { TelephonyModule } from './modules/telephony/telephony.module';
 import { QueuesModule } from './queues/queues.module';
 
 @Module({
@@ -62,6 +63,7 @@ import { QueuesModule } from './queues/queues.module';
     OcrVerificationModule,
     PhysicalVerificationModule,
     FieldAgentWalletModule,
+    TelephonyModule,
   ],
   controllers: [AppController],
   providers: [

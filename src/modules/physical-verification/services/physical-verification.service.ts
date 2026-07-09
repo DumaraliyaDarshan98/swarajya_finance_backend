@@ -32,6 +32,7 @@ import { FieldAssistant } from '../../field-assistance/entities/field-assistant.
 import { FieldAgentWalletService } from '../../field-agent-wallet/services/field-agent-wallet.service';
 import { PhysicalVerificationVisitService } from './physical-verification-visit.service';
 import { PhysicalVerificationVisit } from '../entities/physical-verification-visit.entity';
+import { TelephonyService } from '../../telephony/telephony.service';
 
 type AuthedUser = { role: Role; clientId?: string; sub?: string };
 
@@ -66,6 +67,7 @@ export class PhysicalVerificationService {
     private fieldAssistantRepo: Repository<FieldAssistant>,
     private fieldAgentWalletService: FieldAgentWalletService,
     private visitService: PhysicalVerificationVisitService,
+    private telephonyService: TelephonyService,
   ) {}
 
   private normalizeOptional(value?: string | null): string | null {
@@ -456,6 +458,8 @@ export class PhysicalVerificationService {
       user.sub,
       { visitCount: withVisits.length },
     );
+    console.log('[TELEPHONY] Submit success — triggering INITIAL_SUBMISSION call for case:', saved.id);
+    this.telephonyService.triggerInitialSubmissionCall(saved.id, user.sub);
     return {
       code: HttpStatus.OK,
       message: 'Physical verification submitted for field processing',
@@ -904,6 +908,8 @@ export class PhysicalVerificationService {
       `${performerName ?? 'Super admin'} completed physical verification and generated report`,
       user.sub,
     );
+    console.log('[TELEPHONY] Complete success — triggering FINAL_REPORT call for case:', saved.id);
+    this.telephonyService.triggerFinalReportCall(saved.id, user.sub);
 
     return {
       code: HttpStatus.OK,

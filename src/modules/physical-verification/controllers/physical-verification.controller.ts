@@ -23,6 +23,7 @@ import {
   PHYSICAL_UPLOAD_DIR,
 } from '../services/physical-verification.service';
 import { PhysicalVerificationVisitService } from '../services/physical-verification-visit.service';
+import { TelephonyService } from '../../telephony/telephony.service';
 import { UpsertPhysicalVerificationDto } from '../dto/upsert-physical-verification.dto';
 import { ListPhysicalVerificationQueryDto } from '../dto/list-physical-verification-query.dto';
 import { AssignFieldAgentDto } from '../dto/assign-field-agent.dto';
@@ -48,6 +49,7 @@ export class PhysicalVerificationController {
   constructor(
     private service: PhysicalVerificationService,
     private visitService: PhysicalVerificationVisitService,
+    private telephonyService: TelephonyService,
   ) {}
 
   @Get()
@@ -334,6 +336,12 @@ export class PhysicalVerificationController {
   @Roles(Role.SUPER_ADMIN)
   complete(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.complete(id, req.user);
+  }
+
+  @Post(':id/recall')
+  @Roles(Role.SUPER_ADMIN)
+  recall(@Param('id') id: string, @Request() req: AuthedReq) {
+    return this.telephonyService.recall(id, req.user);
   }
 
   @Delete(':id')

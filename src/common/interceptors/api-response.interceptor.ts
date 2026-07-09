@@ -5,6 +5,7 @@ import {
   CallHandler,
   HttpStatus,
   HttpException,
+  StreamableFile,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
@@ -32,6 +33,10 @@ export class APIResponseInterceptor<T> implements NestInterceptor<
           controller?.name === 'FileController' ||
           controller?.name === 'UserDocumentsController'
         ) {
+          return data;
+        }
+
+        if (data instanceof StreamableFile || Buffer.isBuffer(data)) {
           return data;
         }
 

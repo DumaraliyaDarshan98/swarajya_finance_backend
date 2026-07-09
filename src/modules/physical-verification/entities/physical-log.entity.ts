@@ -21,7 +21,13 @@ export type PhysicalLogAction =
   | 'APPROVED'
   | 'REJECTED'
   | 'COMPLETED'
-  | 'FAILED';
+  | 'FAILED'
+  | 'AUTO_CALL_INITIATED'
+  | 'AUTO_CALL_COMPLETED'
+  | 'AUTO_CALL_FAILED'
+  | 'RECORDING_RECEIVED'
+  | 'CALL_RECALLED'
+  | 'CALL_FAILED';
 
 @Entity('physical_logs')
 export class PhysicalLog {

@@ -9,6 +9,7 @@ import { PhysicalVerificationController } from './controllers/physical-verificat
 import { User } from '../user/entities/user.entity';
 import { FieldAssistant } from '../field-assistance/entities/field-assistant.entity';
 import { FieldAgentWalletModule } from '../field-agent-wallet/field-agent-wallet.module';
+import { TelephonyModule } from '../telephony/telephony.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { FieldAgentWalletModule } from '../field-agent-wallet/field-agent-wallet
       FieldAssistant,
     ]),
     FieldAgentWalletModule,
+    TelephonyModule,
   ],
   controllers: [PhysicalVerificationController],
   providers: [PhysicalVerificationService, PhysicalVerificationVisitService],
