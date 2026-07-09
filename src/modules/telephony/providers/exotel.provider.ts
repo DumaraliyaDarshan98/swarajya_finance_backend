@@ -433,7 +433,7 @@ export class ExotelProvider implements ITelephonyProvider {
   }
 
   handleWebhook(payload: TelephonyWebhookPayload): TelephonyWebhookPayload {
-    console.log('[EXOTEL] handleWebhook payload received:', payload);
-    return payload;
+    console.log('[EXOTEL] handleWebhook payload received:', payload ?? null);
+    return payload ?? ({} as TelephonyWebhookPayload);
   }
 }

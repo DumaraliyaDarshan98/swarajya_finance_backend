@@ -443,13 +443,41 @@ export class TelephonyService {
     };
   }
 
-  async handleWebhook(payload: TelephonyWebhookPayload): Promise<{ received: boolean }> {
+  async handleWebhook(
+    payload?: TelephonyWebhookPayload | null,
+  ): Promise<{ received: boolean; code?: number; message?: string }> {
     console.log('[TELEPHONY] ========== Webhook START ==========');
     console.log('[TELEPHONY] Webhook raw payload:', payload);
 
-    const normalized = this.provider.handleWebhook(payload);
-    const callSid = normalized.CallSid?.trim();
-    const customField = normalized.CustomField?.trim();
+    // Exotel expects HTTP 200 even on empty/malformed callbacks — never throw.
+    if (!payload || typeof payload !== 'object') {
+      console.warn(
+        '[TELEPHONY] WARNING: Webhook body is empty/undefined. ' +
+          'Exotel usually sends application/x-www-form-urlencoded. ' +
+          'Check reverse-proxy Content-Type / body forwarding.',
+      );
+      console.log('[TELEPHONY] ========== Webhook END (empty) ==========');
+      return {
+        code: HttpStatus.OK,
+        message: 'Webhook received (empty payload)',
+        received: true,
+      };
+    }
+
+    const normalized = this.provider.handleWebhook(payload) ?? payload;
+    const callSid = String(normalized.CallSid ?? normalized['CallSid'] ?? '').trim() || undefined;
+    const customField =
+      String(normalized.CustomField ?? normalized['CustomField'] ?? '').trim() || undefined;
+    const statusRaw = String(normalized.Status ?? normalized['Status'] ?? '').trim() || undefined;
+    const recordingUrl =
+      String(normalized.RecordingUrl ?? normalized['RecordingUrl'] ?? '').trim() || undefined;
+
+    console.log('[TELEPHONY] Webhook parsed:', {
+      callSid,
+      customField,
+      status: statusRaw,
+      recordingUrl: recordingUrl ?? null,
+    });
 
     let callRecord: PhysicalVerificationCall | null = null;
     if (customField) {
@@ -459,10 +487,19 @@ export class TelephonyService {
       callRecord = await this.callRepo.findOne({ where: { callSid } });
     }
     if (!callRecord) {
-      console.warn('[TELEPHONY] Webhook for UNKNOWN call — CallSid:', callSid, 'CustomField:', customField);
+      console.warn(
+        '[TELEPHONY] Webhook for UNKNOWN call — CallSid:',
+        callSid,
+        'CustomField:',
+        customField,
+      );
       this.logger.warn(`Webhook received for unknown call: ${callSid ?? customField ?? 'n/a'}`);
       console.log('[TELEPHONY] ========== Webhook END (unknown) ==========');
-      return { received: true };
+      return {
+        code: HttpStatus.OK,
+        message: 'Webhook received (unknown call)',
+        received: true,
+      };
     }
 
     console.log('[TELEPHONY] Matched call record:', {
@@ -472,21 +509,27 @@ export class TelephonyService {
       physicalVerificationId: callRecord.physicalVerificationId,
     });
 
-    const status = this.mapWebhookStatus(normalized.Status);
+    const status = this.mapWebhookStatus(statusRaw);
     callRecord.status = status;
     callRecord.callSid = callSid ?? callRecord.callSid;
     callRecord.startTime =
-      this.parseWebhookDate(normalized.StartTime) ?? callRecord.startTime ?? new Date();
-    callRecord.endTime = this.parseWebhookDate(normalized.EndTime) ?? callRecord.endTime;
+      this.parseWebhookDate(
+        String(normalized.StartTime ?? normalized['StartTime'] ?? '') || null,
+      ) ??
+      callRecord.startTime ??
+      new Date();
+    callRecord.endTime =
+      this.parseWebhookDate(String(normalized.EndTime ?? normalized['EndTime'] ?? '') || null) ??
+      callRecord.endTime;
 
     const duration = this.parseDuration(normalized);
     if (duration != null) {
       callRecord.recordingDuration = duration;
     }
 
-    if (normalized.RecordingUrl?.trim()) {
+    if (recordingUrl) {
       const hadRecording = !!callRecord.recordingUrl;
-      callRecord.recordingUrl = normalized.RecordingUrl.trim();
+      callRecord.recordingUrl = recordingUrl;
       console.log('[TELEPHONY] Recording URL received:', callRecord.recordingUrl);
       if (!hadRecording) {
         await this.addPhysicalLog(
@@ -544,7 +587,11 @@ export class TelephonyService {
     }
 
     console.log('[TELEPHONY] ========== Webhook END ==========');
-    return { received: true };
+    return {
+      code: HttpStatus.OK,
+      message: 'Webhook processed',
+      received: true,
+    };
   }
 
   async getRecordingBuffer(callRecordId: string, user: AuthedUser): Promise<Buffer> {
