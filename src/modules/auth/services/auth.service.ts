@@ -130,6 +130,10 @@ export class AuthService {
           moduleCode: 'FIELD_AGENT',
           permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
         },
+        {
+          moduleCode: 'REPORT_CUSTOMIZATION',
+          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
+        },
       ];
     }
     if (user.role === Role.FIELD_AGENT) {

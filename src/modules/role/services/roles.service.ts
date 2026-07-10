@@ -330,6 +330,12 @@ export class RolesService {
         description: 'Manage field agents and wallets',
         sortOrder: 7,
       },
+      {
+        name: 'Report Customization',
+        code: 'REPORT_CUSTOMIZATION',
+        description: 'Customize verification report layouts by type',
+        sortOrder: 8,
+      },
     ];
     const existing = await this.moduleRepo.find({
       select: { id: true, code: true } as any,

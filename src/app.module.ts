@@ -23,6 +23,8 @@ import { OcrVerificationModule } from './modules/ocr-verification/ocr-verificati
 import { PhysicalVerificationModule } from './modules/physical-verification/physical-verification.module';
 import { FieldAgentWalletModule } from './modules/field-agent-wallet/field-agent-wallet.module';
 import { TelephonyModule } from './modules/telephony/telephony.module';
+import { ReportCustomizationModule } from './modules/report-customization/report-customization.module';
+import { FieldAgentAttendanceModule } from './modules/field-agent-attendance/field-agent-attendance.module';
 import { QueuesModule } from './queues/queues.module';
 
 @Module({
@@ -64,6 +66,8 @@ import { QueuesModule } from './queues/queues.module';
     PhysicalVerificationModule,
     FieldAgentWalletModule,
     TelephonyModule,
+    ReportCustomizationModule,
+    FieldAgentAttendanceModule,
   ],
   controllers: [AppController],
   providers: [
