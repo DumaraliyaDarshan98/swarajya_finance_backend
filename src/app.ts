@@ -5,7 +5,7 @@ import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 export async function createApp() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { cors: true });
   const config = app.get(ConfigService);
 
   // Exotel StatusCallback posts application/x-www-form-urlencoded — ensure parsers are on.
@@ -13,7 +13,7 @@ export async function createApp() {
   app.use(json({ limit: '2mb' }));
 
   app.enableCors({
-    origin: config.get<string>('frontendUrl') ?? '*',
+    origin: '*',
     credentials: true,
   });
 
