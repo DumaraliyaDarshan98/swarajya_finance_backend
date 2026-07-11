@@ -115,6 +115,7 @@ export class PhysicalVerificationVisitService {
     const qb = this.visitRepo
       .createQueryBuilder('v')
       .leftJoinAndSelect('v.parent', 'parent')
+      .leftJoinAndSelect('parent.client', 'client')
       .where('v.assigned_field_agent_user_id = :agentUserId', { agentUserId: user.sub })
       .andWhere('v.status != :approvedStatus', { approvedStatus: 'APPROVED' })
       .orderBy('v.updatedAt', 'DESC')

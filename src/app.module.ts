@@ -25,6 +25,7 @@ import { FieldAgentWalletModule } from './modules/field-agent-wallet/field-agent
 import { TelephonyModule } from './modules/telephony/telephony.module';
 import { ReportCustomizationModule } from './modules/report-customization/report-customization.module';
 import { FieldAgentAttendanceModule } from './modules/field-agent-attendance/field-agent-attendance.module';
+import { GeoModule } from './modules/geo/geo.module';
 import { QueuesModule } from './queues/queues.module';
 
 @Module({
@@ -68,6 +69,7 @@ import { QueuesModule } from './queues/queues.module';
     TelephonyModule,
     ReportCustomizationModule,
     FieldAgentAttendanceModule,
+    GeoModule,
   ],
   controllers: [AppController],
   providers: [
