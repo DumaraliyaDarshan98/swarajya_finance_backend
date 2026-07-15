@@ -13,6 +13,7 @@ import { Role } from '../../../common/enums/role.enum';
 import { MailService } from '../../mail/services/mail.service';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { FieldAssistanceService } from '../../field-assistance/services/field-assistance.service';
+import { TrainingService } from '../../training/services/training.service';
 
 export type PermissionEntry = { moduleCode: string; permissions: string[] };
 
@@ -23,6 +24,7 @@ export class AuthService {
     private jwtService: JwtService,
     private mailService: MailService,
     private fieldAssistanceService: FieldAssistanceService,
+    private trainingService: TrainingService,
   ) {}
 
   async createSuperAdmin(dto: any): Promise<APIResponseInterface<any>> {
@@ -88,13 +90,24 @@ export class AuthService {
 
     const { password, resetToken, resetTokenExpiry, ...userSafe } = user;
 
+    const trainingStatus = await this.trainingService.getTrainingStatusForLogin(
+      user.id,
+      user.role,
+    );
+
     return {
       code: HttpStatus.OK,
       message: 'Login successful',
       data: {
         accessToken,
-        user: { ...userSafe, ...fieldAgentProfile },
+        user: {
+          ...userSafe,
+          ...fieldAgentProfile,
+          trainingRequired: trainingStatus.required && !trainingStatus.completed,
+          trainingCompleted: trainingStatus.completed,
+        },
         permissions,
+        trainingStatus,
       },
     };
   }

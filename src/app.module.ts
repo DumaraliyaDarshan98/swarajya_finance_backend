@@ -26,6 +26,7 @@ import { TelephonyModule } from './modules/telephony/telephony.module';
 import { ReportCustomizationModule } from './modules/report-customization/report-customization.module';
 import { FieldAgentAttendanceModule } from './modules/field-agent-attendance/field-agent-attendance.module';
 import { GeoModule } from './modules/geo/geo.module';
+import { TrainingModule } from './modules/training/training.module';
 import { QueuesModule } from './queues/queues.module';
 
 @Module({
@@ -70,6 +71,7 @@ import { QueuesModule } from './queues/queues.module';
     ReportCustomizationModule,
     FieldAgentAttendanceModule,
     GeoModule,
+    TrainingModule,
   ],
   controllers: [AppController],
   providers: [
