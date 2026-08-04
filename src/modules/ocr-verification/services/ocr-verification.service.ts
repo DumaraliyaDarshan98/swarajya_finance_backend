@@ -224,7 +224,10 @@ export class OcrVerificationService {
     };
   }
 
-  async stats(user: AuthedUser): Promise<
+  async stats(
+    user: AuthedUser,
+    clientIdFilter?: string,
+  ): Promise<
     APIResponseInterface<{
       total: number;
       draft: number;
@@ -233,21 +236,26 @@ export class OcrVerificationService {
       failed: number;
     }>
   > {
+    const scopedClientId =
+      user.role === Role.SUPER_ADMIN
+        ? clientIdFilter?.trim() || undefined
+        : user.clientId;
+
     const baseQb = this.repo.createQueryBuilder('ov');
-    if (user.role !== Role.SUPER_ADMIN) {
-      baseQb.where('ov.client_id = :clientId', { clientId: user.clientId });
+    if (scopedClientId) {
+      baseQb.where('ov.client_id = :clientId', { clientId: scopedClientId });
     }
 
     const total = await baseQb.getCount();
 
-    const rows = await this.repo
+    const rowsQb = this.repo
       .createQueryBuilder('ov')
       .select('ov.status', 'status')
-      .addSelect('COUNT(*)', 'count')
-      .where(
-        user.role !== Role.SUPER_ADMIN ? 'ov.client_id = :clientId' : '1=1',
-        user.role !== Role.SUPER_ADMIN ? { clientId: user.clientId } : {},
-      )
+      .addSelect('COUNT(*)', 'count');
+    if (scopedClientId) {
+      rowsQb.where('ov.client_id = :clientId', { clientId: scopedClientId });
+    }
+    const rows = await rowsQb
       .groupBy('ov.status')
       .getRawMany<{ status: OcrVerificationStatus; count: string }>();
 

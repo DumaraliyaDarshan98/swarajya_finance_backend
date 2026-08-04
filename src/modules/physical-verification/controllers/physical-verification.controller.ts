@@ -58,8 +58,8 @@ export class PhysicalVerificationController {
   }
 
   @Get('stats')
-  stats(@Request() req: AuthedReq) {
-    return this.service.stats(req.user);
+  stats(@Request() req: AuthedReq, @Query('clientId') clientId?: string) {
+    return this.service.stats(req.user, clientId);
   }
 
   @Get('visits/assigned')

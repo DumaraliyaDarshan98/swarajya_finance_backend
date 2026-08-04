@@ -279,7 +279,10 @@ export class PhysicalVerificationService {
     }
   }
 
-  async stats(user: AuthedUser): Promise<
+  async stats(
+    user: AuthedUser,
+    clientIdFilter?: string,
+  ): Promise<
     APIResponseInterface<{
       total: number;
       draft: number;
@@ -303,7 +306,12 @@ export class PhysicalVerificationService {
         throw new ForbiddenException('Field agent identity missing');
       }
       qb.where('pv.assigned_field_agent_user_id = :agentUserId', { agentUserId: user.sub });
-    } else if (user.role !== Role.SUPER_ADMIN) {
+    } else if (user.role === Role.SUPER_ADMIN) {
+      const scoped = clientIdFilter?.trim();
+      if (scoped) {
+        qb.where('pv.client_id = :clientId', { clientId: scoped });
+      }
+    } else {
       qb.where('pv.client_id = :clientId', { clientId: user.clientId });
     }
 
