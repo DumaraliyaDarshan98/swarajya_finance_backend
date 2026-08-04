@@ -27,6 +27,7 @@ import { ReportCustomizationModule } from './modules/report-customization/report
 import { FieldAgentAttendanceModule } from './modules/field-agent-attendance/field-agent-attendance.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { TrainingModule } from './modules/training/training.module';
+import { SubscriptionPlanModule } from './modules/subscription-plan/subscription-plan.module';
 import { RcuTriggersModule } from './modules/rcu-triggers/rcu-triggers.module';
 import { PortalListModule } from './modules/portal-list/portal-list.module';
 import { QueuesModule } from './queues/queues.module';
@@ -74,6 +75,7 @@ import { QueuesModule } from './queues/queues.module';
     FieldAgentAttendanceModule,
     GeoModule,
     TrainingModule,
+    SubscriptionPlanModule,
     RcuTriggersModule,
     PortalListModule,
   ],

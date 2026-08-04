@@ -18,6 +18,7 @@ import { RegisterClientDto } from '../dto/register-client.dto';
 import { ListClientsQueryDto } from '../dto/list-clients-query.dto';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { MailService } from '../../mail/services/mail.service';
+import { SubscriptionPlanService } from '../../subscription-plan/services/subscription-plan.service';
 
 @Injectable()
 export class ClientsService {
@@ -25,6 +26,7 @@ export class ClientsService {
     @InjectRepository(Client) private clientRepo: Repository<Client>,
     @InjectRepository(User) private userRepo: Repository<User>,
     private mailService: MailService,
+    private subscriptionPlanService: SubscriptionPlanService,
   ) {}
 
   private normalizeOptionalString(value?: string | null): string | undefined {
@@ -45,6 +47,23 @@ export class ClientsService {
     });
     if (existing) {
       throw new ConflictException('A client with this email already exists');
+    }
+
+    let setting = dto.setting ?? null;
+    let subscriptionPlanId: string | null = dto.subscriptionPlanId ?? null;
+
+    if (dto.subscriptionPlanId) {
+      const plan = await this.subscriptionPlanService.findEntity(
+        dto.subscriptionPlanId,
+      );
+      if (!plan) {
+        throw new BadRequestException('Subscription plan not found');
+      }
+      if (!plan.isActive) {
+        throw new BadRequestException('Subscription plan is inactive');
+      }
+      setting = this.subscriptionPlanService.settingsFromPlan(plan);
+      subscriptionPlanId = plan.id;
     }
 
     const clientEntity = this.clientRepo.create({
@@ -85,7 +104,8 @@ export class ClientsService {
       dueDiligenceDocumentUrl: this.normalizeOptionalString(
         dto.dueDiligenceDocumentUrl,
       ),
-      setting: dto.setting ?? null,
+      setting,
+      subscriptionPlanId,
     });
     const client = await this.clientRepo.save(clientEntity);
 
@@ -128,6 +148,7 @@ export class ClientsService {
 
     const qb = this.clientRepo
       .createQueryBuilder('client')
+      .leftJoinAndSelect('client.subscriptionPlan', 'subscriptionPlan')
       .orderBy('client.createdAt', 'DESC');
 
     if (query.search?.trim()) {
@@ -152,16 +173,81 @@ export class ClientsService {
     };
   }
 
-  async findOne(
-    id: string,
+  async findMyClient(user: {
+    role: string;
+    clientId?: string;
+  }): Promise<APIResponseInterface<Client>> {
+    if (!user.clientId) {
+      throw new ForbiddenException('No client organization linked to this user');
+    }
+    return this.findOne(user.clientId, user);
+  }
+
+  /**
+   * Client admin switches subscription plan.
+   * Applies plan feature settings immediately.
+   * Payment gateway can be inserted before this apply step later.
+   */
+  async changeMyPlan(
     user: { role: string; clientId?: string },
+    subscriptionPlanId: string,
   ): Promise<APIResponseInterface<Client>> {
-    const client = await this.clientRepo.findOne({ where: { id } });
+    if (user.role !== Role.CLIENT_ADMIN) {
+      throw new ForbiddenException('Only client admin can change the subscription plan');
+    }
+    if (!user.clientId) {
+      throw new ForbiddenException('No client organization linked to this user');
+    }
+
+    const client = await this.clientRepo.findOne({
+      where: { id: user.clientId },
+    });
     if (!client) {
       throw new NotFoundException('Client not found');
     }
 
-    if (user.role === Role.CLIENT_ADMIN && user.clientId !== id) {
+    const plan = await this.subscriptionPlanService.findEntity(subscriptionPlanId);
+    if (!plan) {
+      throw new BadRequestException('Subscription plan not found');
+    }
+    if (!plan.isActive) {
+      throw new BadRequestException('This subscription plan is not available');
+    }
+
+    // TODO: integrate payment gateway here before applying the plan.
+
+    client.subscriptionPlanId = plan.id;
+    client.setting = this.subscriptionPlanService.settingsFromPlan(plan);
+    await this.clientRepo.save(client);
+
+    const updated = await this.clientRepo.findOne({
+      where: { id: client.id },
+      relations: ['subscriptionPlan'],
+    });
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Subscription plan updated successfully',
+      data: updated!,
+    };
+  }
+
+  async findOne(
+    id: string,
+    user: { role: string; clientId?: string },
+  ): Promise<APIResponseInterface<Client>> {
+    const client = await this.clientRepo.findOne({
+      where: { id },
+      relations: ['subscriptionPlan'],
+    });
+    if (!client) {
+      throw new NotFoundException('Client not found');
+    }
+
+    if (
+      (user.role === Role.CLIENT_ADMIN || user.role === Role.CLIENT_USER) &&
+      user.clientId !== id
+    ) {
       throw new ForbiddenException('You can only view your own client details');
     }
 
@@ -260,12 +346,35 @@ export class ClientsService {
         dto.dueDiligenceDocumentUrl,
       );
     }
+
+    if (dto.subscriptionPlanId !== undefined) {
+      if (dto.subscriptionPlanId === null || dto.subscriptionPlanId === '') {
+        updatePayload.subscriptionPlanId = null;
+      } else {
+        const plan = await this.subscriptionPlanService.findEntity(
+          dto.subscriptionPlanId,
+        );
+        if (!plan) {
+          throw new BadRequestException('Subscription plan not found');
+        }
+        updatePayload.subscriptionPlanId = plan.id;
+        // Re-apply plan features whenever the assigned plan changes
+        if (plan.id !== client.subscriptionPlanId) {
+          updatePayload.setting =
+            this.subscriptionPlanService.settingsFromPlan(plan);
+        }
+      }
+    }
+
     const filtered = Object.fromEntries(
       Object.entries(updatePayload).filter(([, v]) => v !== undefined),
     );
 
     await this.clientRepo.update(id, filtered);
-    const updated = await this.clientRepo.findOne({ where: { id } });
+    const updated = await this.clientRepo.findOne({
+      where: { id },
+      relations: ['subscriptionPlan'],
+    });
 
     return {
       code: HttpStatus.OK,
