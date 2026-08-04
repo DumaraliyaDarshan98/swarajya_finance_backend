@@ -2,16 +2,20 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Get,
   HttpStatus,
+  NotFoundException,
+  Param,
   Post,
   Request,
+  StreamableFile,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync } from 'fs';
+import { createReadStream, existsSync, mkdirSync, statSync } from 'fs';
 import type { Request as ExpressRequest } from 'express';
 import { FieldAssistanceService } from '../services/field-assistance.service';
 import { UpsertFieldAssistantDto } from '../dto/field-assistant.dto';
@@ -36,6 +40,7 @@ function sanitizeFilename(name: string): string {
 export class FieldAssistancePublicController {
   constructor(private readonly service: FieldAssistanceService) {}
 
+  /** Single registration API — full payload in one request (document URLs from upload endpoint). */
   @Post('register')
   register(@Body() dto: UpsertFieldAssistantDto) {
     return this.service.selfRegister(dto);
@@ -78,7 +83,34 @@ export class FieldAssistancePublicController {
     return {
       code: HttpStatus.CREATED,
       message: 'File uploaded successfully',
-      data: { url: `/${prefix}/users/documents/view/${file.filename}` },
+      data: {
+        url: `/${prefix}/field-assistants/register/documents/view/${file.filename}`,
+      },
     };
+  }
+
+  /** Public document view for self-registration uploads (no auth). */
+  @Get('register/documents/view/:filename')
+  viewRegistrationDocument(@Param('filename') filename: string): StreamableFile {
+    if (!filename || filename.includes('..')) {
+      throw new BadRequestException('Invalid filename');
+    }
+    const filePath = join(UPLOAD_DIR, filename);
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      throw new NotFoundException('Document not found');
+    }
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const mime: Record<string, string> = {
+      pdf: 'application/pdf',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    const contentType = mime[ext || ''] || 'application/octet-stream';
+    return new StreamableFile(createReadStream(filePath), { type: contentType });
   }
 }
