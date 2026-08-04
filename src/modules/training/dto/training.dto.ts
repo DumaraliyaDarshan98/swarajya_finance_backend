@@ -1,4 +1,6 @@
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -8,8 +10,10 @@ import {
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -47,6 +51,27 @@ export class CreateTrainingDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  passingMarks?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  averagePassingMarks?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  failMarks?: number;
 }
 
 export class UpdateTrainingDto {
@@ -82,6 +107,27 @@ export class UpdateTrainingDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  passingMarks?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  averagePassingMarks?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  failMarks?: number;
 }
 
 export class UpdateTrainingStatusDto {
@@ -99,4 +145,93 @@ export class UpdateTrainingResetConfigDto {
 export class CompleteTrainingVideoDto {
   @IsUUID()
   trainingId: string;
+}
+
+export class TrainingQuestionOptionDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(20)
+  key: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  text: string;
+}
+
+export class CreateTrainingQuestionDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  questionText: string;
+
+  @IsArray()
+  @ArrayMinSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => TrainingQuestionOptionDto)
+  options: TrainingQuestionOptionDto[];
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(20)
+  correctOptionKey: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class UpdateTrainingQuestionDto {
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  questionText?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => TrainingQuestionOptionDto)
+  options?: TrainingQuestionOptionDto[];
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(20)
+  correctOptionKey?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class ExamAnswerDto {
+  @IsUUID()
+  questionId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(20)
+  selectedOptionKey: string;
+}
+
+export class SubmitTrainingExamDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ExamAnswerDto)
+  answers: ExamAnswerDto[];
 }

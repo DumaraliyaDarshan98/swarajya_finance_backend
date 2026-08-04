@@ -5,7 +5,7 @@ import { RolesGuard } from '../../../common/guards/roles.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { Role } from '../../../common/enums/role.enum';
 import { AuthedUser } from '../../../common/interfaces/authed-user.interface';
-import { CompleteTrainingVideoDto } from '../dto/training.dto';
+import { CompleteTrainingVideoDto, SubmitTrainingExamDto } from '../dto/training.dto';
 
 @Controller('trainings')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -34,6 +34,34 @@ export class TrainingUserController {
       req.user.sub,
       req.user.role,
       dto.trainingId,
+    );
+  }
+
+  @Get('me/:trainingId/exam')
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  getExam(
+    @Req() req: { user: AuthedUser },
+    @Param('trainingId') trainingId: string,
+  ) {
+    return this.trainingService.getExamForUser(
+      req.user.sub,
+      req.user.role,
+      trainingId,
+    );
+  }
+
+  @Post('me/:trainingId/exam/submit')
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  submitExam(
+    @Req() req: { user: AuthedUser },
+    @Param('trainingId') trainingId: string,
+    @Body() dto: SubmitTrainingExamDto,
+  ) {
+    return this.trainingService.submitExam(
+      req.user.sub,
+      req.user.role,
+      trainingId,
+      dto,
     );
   }
 

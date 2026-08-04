@@ -4,6 +4,8 @@ import { Training } from './entities/training.entity';
 import { UserTraining } from './entities/user-training.entity';
 import { TrainingCertificate } from './entities/training-certificate.entity';
 import { TrainingCompletionHistory } from './entities/training-completion-history.entity';
+import { TrainingQuestion } from './entities/training-question.entity';
+import { TrainingExamAttempt } from './entities/training-exam-attempt.entity';
 import { SuperAdminSettings } from '../super-admin-settings/entities/super-admin-settings.entity';
 import { User } from '../user/entities/user.entity';
 import { Client } from '../client/entities/client.entity';
@@ -19,6 +21,8 @@ import { TrainingUserController } from './controllers/training-user.controller';
       UserTraining,
       TrainingCertificate,
       TrainingCompletionHistory,
+      TrainingQuestion,
+      TrainingExamAttempt,
       SuperAdminSettings,
       User,
       FieldAssistant,

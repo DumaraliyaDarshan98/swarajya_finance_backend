@@ -10,6 +10,15 @@ import { Training, TrainingTargetRole } from '../entities/training.entity';
 import { UserTraining } from '../entities/user-training.entity';
 import { TrainingCertificate } from '../entities/training-certificate.entity';
 import { TrainingCompletionHistory } from '../entities/training-completion-history.entity';
+import {
+  TrainingQuestion,
+  TrainingQuestionOption,
+} from '../entities/training-question.entity';
+import {
+  TrainingExamAttempt,
+  TrainingExamAnswerRow,
+  TrainingExamResultBand,
+} from '../entities/training-exam-attempt.entity';
 import { SuperAdminSettings } from '../../super-admin-settings/entities/super-admin-settings.entity';
 import { User } from '../../user/entities/user.entity';
 import { Client } from '../../client/entities/client.entity';
@@ -18,7 +27,10 @@ import { Role } from '../../../common/enums/role.enum';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import {
   CreateTrainingDto,
+  CreateTrainingQuestionDto,
+  SubmitTrainingExamDto,
   UpdateTrainingDto,
+  UpdateTrainingQuestionDto,
   UpdateTrainingStatusDto,
 } from '../dto/training.dto';
 
@@ -31,6 +43,17 @@ export interface TrainingItemStatus {
   completedAt: string | null;
   isCurrent: boolean;
   isLocked: boolean;
+  hasExam: boolean;
+  examPassed: boolean;
+  lastExamResult: TrainingExamResultBand | null;
+  lastExamScore: number | null;
+}
+
+export interface PublicExamQuestion {
+  id: string;
+  questionText: string;
+  options: TrainingQuestionOption[];
+  sortOrder: number;
 }
 
 export interface TrainingGateStatus {
@@ -62,6 +85,10 @@ export class TrainingService {
     private readonly certificateRepo: Repository<TrainingCertificate>,
     @InjectRepository(TrainingCompletionHistory)
     private readonly historyRepo: Repository<TrainingCompletionHistory>,
+    @InjectRepository(TrainingQuestion)
+    private readonly questionRepo: Repository<TrainingQuestion>,
+    @InjectRepository(TrainingExamAttempt)
+    private readonly examAttemptRepo: Repository<TrainingExamAttempt>,
     @InjectRepository(SuperAdminSettings)
     private readonly settingsRepo: Repository<SuperAdminSettings>,
     @InjectRepository(User)
@@ -74,6 +101,29 @@ export class TrainingService {
 
   // ---------- Admin CRUD ----------
 
+  private normalizeMarks(dto: {
+    passingMarks?: number;
+    averagePassingMarks?: number;
+    failMarks?: number;
+  }): { passingMarks: number; averagePassingMarks: number; failMarks: number } {
+    const passingMarks = Number(dto.passingMarks ?? 70);
+    const averagePassingMarks = Number(dto.averagePassingMarks ?? 50);
+    const failMarks = Number(dto.failMarks ?? averagePassingMarks);
+    if (
+      ![passingMarks, averagePassingMarks, failMarks].every(
+        (n) => Number.isFinite(n) && n >= 0 && n <= 100,
+      )
+    ) {
+      throw new BadRequestException('Marks must be between 0 and 100');
+    }
+    if (!(failMarks <= averagePassingMarks && averagePassingMarks <= passingMarks)) {
+      throw new BadRequestException(
+        'Require failMarks ≤ averagePassingMarks ≤ passingMarks',
+      );
+    }
+    return { passingMarks, averagePassingMarks, failMarks };
+  }
+
   async create(
     dto: CreateTrainingDto,
   ): Promise<APIResponseInterface<Training>> {
@@ -82,6 +132,7 @@ export class TrainingService {
         ? dto.sortOrder
         : await this.nextSortOrder(dto.role);
 
+    const marks = this.normalizeMarks(dto);
     const entity = this.trainingRepo.create({
       role: dto.role,
       title: dto.title.trim(),
@@ -89,6 +140,7 @@ export class TrainingService {
       description: dto.description?.trim() || null,
       isActive: dto.isActive ?? true,
       sortOrder,
+      ...marks,
     });
     const saved = await this.trainingRepo.save(entity);
     return {
@@ -113,6 +165,22 @@ export class TrainingService {
     }
     if (dto.isActive !== undefined) row.isActive = dto.isActive;
     if (dto.sortOrder !== undefined) row.sortOrder = dto.sortOrder;
+
+    if (
+      dto.passingMarks !== undefined ||
+      dto.averagePassingMarks !== undefined ||
+      dto.failMarks !== undefined
+    ) {
+      const marks = this.normalizeMarks({
+        passingMarks: dto.passingMarks ?? Number(row.passingMarks),
+        averagePassingMarks:
+          dto.averagePassingMarks ?? Number(row.averagePassingMarks),
+        failMarks: dto.failMarks ?? Number(row.failMarks),
+      });
+      row.passingMarks = marks.passingMarks;
+      row.averagePassingMarks = marks.averagePassingMarks;
+      row.failMarks = marks.failMarks;
+    }
 
     const saved = await this.trainingRepo.save(row);
     return {
@@ -285,6 +353,21 @@ export class TrainingService {
       throw new BadRequestException(
         'Please complete the training videos in order',
       );
+    }
+
+    const qCount = await this.questionRepo.count({
+      where: { trainingId, isActive: true },
+    });
+    if (qCount > 0) {
+      const latestPass = await this.examAttemptRepo.findOne({
+        where: { userId, trainingId, isPassed: true },
+        order: { createdAt: 'DESC' },
+      });
+      if (!latestPass) {
+        throw new BadRequestException(
+          'Please pass the training exam before marking this video complete',
+        );
+      }
     }
 
     const now = new Date();
@@ -610,6 +693,26 @@ export class TrainingService {
       trainings.map((t) => t.id),
     );
 
+    const questionCounts = await this.questionRepo
+      .createQueryBuilder('q')
+      .select('q.training_id', 'trainingId')
+      .addSelect('COUNT(*)', 'cnt')
+      .where('q.training_id IN (:...ids)', { ids: trainings.map((t) => t.id) })
+      .andWhere('q.is_active = :active', { active: true })
+      .groupBy('q.training_id')
+      .getRawMany<{ trainingId: string; cnt: string }>();
+    const qCountMap = new Map(
+      questionCounts.map((r) => [r.trainingId, Number(r.cnt) || 0]),
+    );
+    const latestAttempts = await this.examAttemptRepo.find({
+      where: { userId, trainingId: In(trainings.map((t) => t.id)) },
+      order: { createdAt: 'DESC' },
+    });
+    const latestAttemptMap = new Map<string, TrainingExamAttempt>();
+    for (const a of latestAttempts) {
+      if (!latestAttemptMap.has(a.trainingId)) latestAttemptMap.set(a.trainingId, a);
+    }
+
     let foundCurrent = false;
     const items: TrainingItemStatus[] = trainings.map((training) => {
       const ut = progressMap.get(training.id);
@@ -624,15 +727,19 @@ export class TrainingService {
           isLocked = true;
         }
       }
+      const attempt = latestAttemptMap.get(training.id) || null;
       return {
         training,
         isCompleted,
         completedAt: ut?.completedAt ? ut.completedAt.toISOString() : null,
         isCurrent,
         isLocked,
+        hasExam: (qCountMap.get(training.id) || 0) > 0,
+        examPassed: !!attempt?.isPassed,
+        lastExamResult: attempt?.result ?? null,
+        lastExamScore: attempt ? Number(attempt.score) : null,
       };
     });
-
     const completedCount = items.filter((i) => i.isCompleted).length;
     const allVideosCompleted = completedCount === trainings.length;
     const currentTraining =
@@ -675,6 +782,303 @@ export class TrainingService {
       expiresAt,
       resetDurationDays,
       progress: { completed: completedCount, total: trainings.length },
+    };
+  }
+
+
+  // ---------- Admin questions ----------
+
+  private validateQuestionPayload(dto: {
+    options: TrainingQuestionOption[];
+    correctOptionKey: string;
+  }): void {
+    const keys = dto.options.map((o) => o.key.trim());
+    if (new Set(keys).size !== keys.length) {
+      throw new BadRequestException('Option keys must be unique');
+    }
+    if (!keys.includes(dto.correctOptionKey.trim())) {
+      throw new BadRequestException('correctOptionKey must match one option key');
+    }
+  }
+
+  async listQuestions(
+    trainingId: string,
+  ): Promise<APIResponseInterface<TrainingQuestion[]>> {
+    const training = await this.trainingRepo.findOne({ where: { id: trainingId } });
+    if (!training) throw new NotFoundException('Training not found');
+    const rows = await this.questionRepo.find({
+      where: { trainingId },
+      order: { sortOrder: 'ASC', createdAt: 'ASC' },
+    });
+    return {
+      code: HttpStatus.OK,
+      message: 'Questions fetched successfully',
+      data: rows,
+    };
+  }
+
+  async createQuestion(
+    trainingId: string,
+    dto: CreateTrainingQuestionDto,
+  ): Promise<APIResponseInterface<TrainingQuestion>> {
+    const training = await this.trainingRepo.findOne({ where: { id: trainingId } });
+    if (!training) throw new NotFoundException('Training not found');
+    const options = dto.options.map((o) => ({
+      key: o.key.trim(),
+      text: o.text.trim(),
+    }));
+    this.validateQuestionPayload({ options, correctOptionKey: dto.correctOptionKey });
+    const last = await this.questionRepo.find({
+      where: { trainingId },
+      order: { sortOrder: 'DESC' },
+      take: 1,
+    });
+    const sortOrder = dto.sortOrder !== undefined ? dto.sortOrder : (last[0]?.sortOrder ?? -1) + 1;
+    const saved = await this.questionRepo.save(
+      this.questionRepo.create({
+        trainingId,
+        questionText: dto.questionText.trim(),
+        options,
+        correctOptionKey: dto.correctOptionKey.trim(),
+        sortOrder,
+        isActive: dto.isActive ?? true,
+      }),
+    );
+    return {
+      code: HttpStatus.CREATED,
+      message: 'Question created successfully',
+      data: saved,
+    };
+  }
+
+  async updateQuestion(
+    trainingId: string,
+    questionId: string,
+    dto: UpdateTrainingQuestionDto,
+  ): Promise<APIResponseInterface<TrainingQuestion>> {
+    const row = await this.questionRepo.findOne({ where: { id: questionId, trainingId } });
+    if (!row) throw new NotFoundException('Question not found');
+    if (dto.questionText !== undefined) row.questionText = dto.questionText.trim();
+    if (dto.options !== undefined) {
+      row.options = dto.options.map((o) => ({ key: o.key.trim(), text: o.text.trim() }));
+    }
+    if (dto.correctOptionKey !== undefined) row.correctOptionKey = dto.correctOptionKey.trim();
+    if (dto.sortOrder !== undefined) row.sortOrder = dto.sortOrder;
+    if (dto.isActive !== undefined) row.isActive = dto.isActive;
+    this.validateQuestionPayload({
+      options: row.options,
+      correctOptionKey: row.correctOptionKey,
+    });
+    const saved = await this.questionRepo.save(row);
+    return {
+      code: HttpStatus.OK,
+      message: 'Question updated successfully',
+      data: saved,
+    };
+  }
+
+  async deleteQuestion(
+    trainingId: string,
+    questionId: string,
+  ): Promise<APIResponseInterface<null>> {
+    const row = await this.questionRepo.findOne({ where: { id: questionId, trainingId } });
+    if (!row) throw new NotFoundException('Question not found');
+    await this.questionRepo.remove(row);
+    return {
+      code: HttpStatus.OK,
+      message: 'Question deleted successfully',
+      data: null,
+    };
+  }
+
+  // ---------- User exam ----------
+
+  async getExamForUser(
+    userId: string,
+    role: string,
+    trainingId: string,
+  ): Promise<
+    APIResponseInterface<{
+      training: Training;
+      questions: PublicExamQuestion[];
+      settings: {
+        passingMarks: number;
+        averagePassingMarks: number;
+        failMarks: number;
+      };
+    }>
+  > {
+    if (role !== Role.FIELD_AGENT && role !== Role.CLIENT_ADMIN) {
+      throw new BadRequestException('Exam is not available for this role');
+    }
+    const trainings = await this.getActiveTrainingsForRole(role as TrainingTargetRole);
+    const training = trainings.find((t) => t.id === trainingId);
+    if (!training) throw new NotFoundException('Training not found for your role');
+
+    await this.applyExpiryResets(userId, trainings);
+    const progressMap = await this.getUserProgressMap(
+      userId,
+      trainings.map((t) => t.id),
+    );
+    const current = trainings.find((t) => !progressMap.get(t.id)?.isCompleted);
+    if (!current || current.id !== trainingId) {
+      throw new BadRequestException('Exam is only available for your current lesson');
+    }
+
+    const rows = await this.questionRepo.find({
+      where: { trainingId, isActive: true },
+      order: { sortOrder: 'ASC', createdAt: 'ASC' },
+    });
+    if (!rows.length) {
+      throw new BadRequestException('No exam questions configured for this training');
+    }
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Exam loaded successfully',
+      data: {
+        training,
+        questions: rows.map((q) => ({
+          id: q.id,
+          questionText: q.questionText,
+          options: q.options,
+          sortOrder: q.sortOrder,
+        })),
+        settings: {
+          passingMarks: Number(training.passingMarks),
+          averagePassingMarks: Number(training.averagePassingMarks),
+          failMarks: Number(training.failMarks),
+        },
+      },
+    };
+  }
+
+  private bandForScore(
+    score: number,
+    passingMarks: number,
+    averagePassingMarks: number,
+    failMarks: number,
+  ): TrainingExamResultBand {
+    if (score >= passingMarks) return 'PASS';
+    if (score >= averagePassingMarks && score >= failMarks) return 'AVERAGE';
+    return 'FAIL';
+  }
+
+  async submitExam(
+    userId: string,
+    role: string,
+    trainingId: string,
+    dto: SubmitTrainingExamDto,
+  ): Promise<
+    APIResponseInterface<{
+      attempt: TrainingExamAttempt;
+      status: TrainingGateStatus;
+      lessonCompleted: boolean;
+    }>
+  > {
+    if (role !== Role.FIELD_AGENT && role !== Role.CLIENT_ADMIN) {
+      throw new BadRequestException('Exam is not available for this role');
+    }
+    const trainings = await this.getActiveTrainingsForRole(role as TrainingTargetRole);
+    const training = trainings.find((t) => t.id === trainingId);
+    if (!training) throw new NotFoundException('Training not found for your role');
+
+    await this.applyExpiryResets(userId, trainings);
+    const progressMap = await this.getUserProgressMap(
+      userId,
+      trainings.map((t) => t.id),
+    );
+    const current = trainings.find((t) => !progressMap.get(t.id)?.isCompleted);
+    if (!current || current.id !== trainingId) {
+      throw new BadRequestException('Exam is only available for your current lesson');
+    }
+
+    const questions = await this.questionRepo.find({
+      where: { trainingId, isActive: true },
+      order: { sortOrder: 'ASC', createdAt: 'ASC' },
+    });
+    if (!questions.length) {
+      throw new BadRequestException('No exam questions configured for this training');
+    }
+
+    const answerMap = new Map(
+      dto.answers.map((a) => [a.questionId, a.selectedOptionKey.trim()]),
+    );
+    const graded: TrainingExamAnswerRow[] = [];
+    let correct = 0;
+    for (const q of questions) {
+      const selected = answerMap.get(q.id) || '';
+      const isCorrect = selected === q.correctOptionKey;
+      if (isCorrect) correct += 1;
+      graded.push({
+        questionId: q.id,
+        selectedOptionKey: selected,
+        isCorrect,
+      });
+    }
+
+    const total = questions.length;
+    const score = Math.round((correct / total) * 10000) / 100;
+    const passingMarks = Number(training.passingMarks);
+    const averagePassingMarks = Number(training.averagePassingMarks);
+    const failMarks = Number(training.failMarks);
+    const result = this.bandForScore(
+      score,
+      passingMarks,
+      averagePassingMarks,
+      failMarks,
+    );
+    const isPassed = result === 'PASS' || result === 'AVERAGE';
+
+    const attempt = await this.examAttemptRepo.save(
+      this.examAttemptRepo.create({
+        userId,
+        trainingId,
+        score,
+        result,
+        isPassed,
+        totalQuestions: total,
+        correctAnswers: correct,
+        answers: graded,
+        passingMarks,
+        averagePassingMarks,
+        failMarks,
+      }),
+    );
+
+    let lessonCompleted = false;
+    if (isPassed) {
+      const now = new Date();
+      let userTraining = progressMap.get(trainingId) || null;
+      if (!userTraining) {
+        userTraining = this.userTrainingRepo.create({ userId, trainingId });
+      }
+      userTraining.isCompleted = true;
+      userTraining.completedAt = now;
+      userTraining.expiresAt = null;
+      await this.userTrainingRepo.save(userTraining);
+      await this.historyRepo.save(
+        this.historyRepo.create({
+          userId,
+          trainingId,
+          certificateId: null,
+          completedAt: now,
+          expiresAt: null,
+          resetReason: null,
+        }),
+      );
+      lessonCompleted = true;
+    }
+
+    const status = await this.resolveTrainingStatus(userId, role);
+    return {
+      code: HttpStatus.OK,
+      message: isPassed
+        ? result === 'PASS'
+          ? 'Exam passed. Lesson completed.'
+          : 'Average pass. Lesson completed.'
+        : 'Exam failed. Please retry after reviewing the video.',
+      data: { attempt, status, lessonCompleted },
     };
   }
 

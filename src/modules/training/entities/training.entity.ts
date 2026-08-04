@@ -34,6 +34,39 @@ export class Training {
   @Column({ name: 'sort_order', type: 'int', default: 0 })
   sortOrder: number;
 
+  /**
+   * Exam thresholds (percentage 0–100).
+   * Pass: score >= passingMarks
+   * Average: averagePassingMarks <= score < passingMarks
+   * Fail: score < failMarks (typically failMarks === averagePassingMarks)
+   */
+  @Column({
+    name: 'passing_marks',
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    default: 70,
+  })
+  passingMarks: number;
+
+  @Column({
+    name: 'average_passing_marks',
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    default: 50,
+  })
+  averagePassingMarks: number;
+
+  @Column({
+    name: 'fail_marks',
+    type: 'decimal',
+    precision: 5,
+    scale: 2,
+    default: 50,
+  })
+  failMarks: number;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
