@@ -299,9 +299,14 @@ export class FieldAgentAttendanceService {
     }
     if (query.search?.trim()) {
       qb.andWhere(
-        '(a.fieldAgentName LIKE :search OR a.fieldAgentCode LIKE :search OR a.locationLabel LIKE :search)',
+        `(a.fieldAgentName LIKE :search OR a.fieldAgentCode LIKE :search
+          OR a.locationLabel LIKE :search OR a.locationType LIKE :search
+          OR a.status LIKE :search OR CAST(a.attendanceDate AS CHAR) LIKE :search)`,
         { search: `%${query.search.trim()}%` },
       );
+    }
+    if (query.status?.trim()) {
+      qb.andWhere('a.status = :status', { status: query.status.trim() });
     }
 
     const [rows, total] = await qb

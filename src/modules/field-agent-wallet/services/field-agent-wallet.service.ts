@@ -319,6 +319,12 @@ export class FieldAgentWalletService {
       );
     }
 
+    if (query.verificationType?.trim()) {
+      qb.andWhere('tx.verification_type LIKE :verificationType', {
+        verificationType: `%${query.verificationType.trim()}%`,
+      });
+    }
+
     const [rows, total] = await qb.getManyAndCount();
 
     return {

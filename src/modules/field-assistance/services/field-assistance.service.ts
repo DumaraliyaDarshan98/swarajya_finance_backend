@@ -695,6 +695,48 @@ export class FieldAssistanceService {
     return { code: HttpStatus.OK, message: 'Field assistant fetched', data: fa };
   }
 
+  /** Logged-in field agent: full profile by user id (not FA uuid). */
+  async getProfileForUser(
+    userId: string,
+  ): Promise<APIResponseInterface<FieldAssistant>> {
+    const fa = await this.findByUserId(userId);
+    if (!fa) {
+      throw new NotFoundException('Field agent profile not found');
+    }
+    return this.getById(fa.id);
+  }
+
+  /**
+   * Self-service profile update. Admin-only fields are locked to existing values.
+   */
+  async updateProfileForUser(
+    userId: string,
+    dto: UpsertFieldAssistantDto,
+  ): Promise<APIResponseInterface<FieldAssistant>> {
+    const fa = await this.findByUserId(userId);
+    if (!fa) {
+      throw new NotFoundException('Field agent profile not found');
+    }
+
+    const toDateStr = (value: unknown): string | undefined => {
+      if (value == null || value === '') return undefined;
+      if (value instanceof Date) return value.toISOString().slice(0, 10);
+      return String(value).slice(0, 10);
+    };
+
+    const locked: UpsertFieldAssistantDto = {
+      ...dto,
+      status: fa.status,
+      fieldAgentId: fa.fieldAgentId ?? undefined,
+      assignCompanyClient: fa.assignCompanyClient ?? undefined,
+      reportingManager: fa.reportingManager ?? undefined,
+      joiningDate: toDateStr(fa.joiningDate),
+      remarks: fa.remarks ?? undefined,
+    };
+
+    return this.update(fa.id, locked, userId);
+  }
+
   /**
    * Edit/update field assistant with nested details.
    * - Validates age >= 18

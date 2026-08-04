@@ -266,4 +266,32 @@ export class AuthService {
       data: null,
     };
   }
+
+  async changePassword(
+    userId: string,
+    dto: { currentPassword: string; newPassword: string },
+  ): Promise<APIResponseInterface<null>> {
+    const user = await this.usersService.findById(userId);
+    if (!user?.password) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    const matches = await bcrypt.compare(dto.currentPassword, user.password);
+    if (!matches) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
+    if (dto.currentPassword === dto.newPassword) {
+      throw new BadRequestException('New password must be different from current password');
+    }
+
+    user.password = await bcrypt.hash(dto.newPassword, 10);
+    await this.usersService.save(user);
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Password changed successfully',
+      data: null,
+    };
+  }
 }

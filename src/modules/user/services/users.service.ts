@@ -38,6 +38,10 @@ export class UsersService {
     return this.userRepository.findByEmail(email);
   }
 
+  findById(id: string) {
+    return this.repo.findOne({ where: { id } });
+  }
+
   save(user: Partial<User>) {
     return this.userRepository.save(user);
   }

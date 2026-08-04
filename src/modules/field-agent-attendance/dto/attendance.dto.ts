@@ -48,6 +48,10 @@ export class ListAttendanceQueryDto {
   search?: string;
 
   @IsOptional()
+  @IsIn(['Present', 'Absent', 'Half Day'])
+  status?: 'Present' | 'Absent' | 'Half Day';
+
+  @IsOptional()
   @IsString()
   fromDate?: string;
 
