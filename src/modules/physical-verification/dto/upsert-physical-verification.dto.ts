@@ -35,6 +35,7 @@ class DocumentTypeVerificationDto {
   @IsOptional() @IsString() documentPrimaryKey?: string;
   @IsOptional() @IsString() remark?: string;
   @IsOptional() @IsString() fileName?: string;
+  @IsOptional() @IsString() fileUrl?: string;
 }
 
 export class UpsertPhysicalVerificationDto {

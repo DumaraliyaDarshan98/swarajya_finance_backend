@@ -398,6 +398,59 @@ export class UsersService {
     };
   }
 
+  /** Logged-in user profile (any role that can access /users). */
+  async getMe(userId: string): Promise<APIResponseInterface<Partial<User>>> {
+    const user = await this.repo.findOne({
+      where: { id: userId },
+      relations: ['client', 'customRole'],
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    const { password, resetToken, resetTokenExpiry, ...safe } = user;
+    return {
+      code: HttpStatus.OK,
+      message: 'Profile fetched successfully',
+      data: safe,
+    };
+  }
+
+  /**
+   * Self-service profile update. Role / customRole cannot be changed here.
+   */
+  async updateMe(
+    userId: string,
+    dto: UpdateInternalUserDto,
+  ): Promise<APIResponseInterface<Partial<User>>> {
+    const user = await this.repo.findOne({
+      where: { id: userId },
+      relations: ['client', 'customRole'],
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (dto.fullName != null) user.fullName = dto.fullName;
+    if (dto.mobileNumber != null) user.mobileNumber = dto.mobileNumber;
+    if (dto.alternateNumber != null) user.alternateNumber = dto.alternateNumber;
+    if (dto.flatPlotNo != null) user.flatPlotNo = dto.flatPlotNo;
+    if (dto.addressLine1 != null) user.addressLine1 = dto.addressLine1;
+    if (dto.addressLine2 != null) user.addressLine2 = dto.addressLine2;
+    if (dto.landmark != null) user.landmark = dto.landmark;
+    if (dto.country != null) user.country = dto.country;
+    if (dto.state != null) user.state = dto.state;
+    if (dto.city != null) user.city = dto.city;
+    if (dto.pincode != null) user.pincode = dto.pincode;
+
+    const saved = await this.repo.save(user);
+    const { password, resetToken, resetTokenExpiry, ...safe } = saved;
+    return {
+      code: HttpStatus.OK,
+      message: 'Profile updated successfully',
+      data: safe,
+    };
+  }
+
   async updateInternalUser(
     id: string,
     dto: UpdateInternalUserDto,

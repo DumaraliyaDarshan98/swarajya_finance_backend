@@ -41,12 +41,12 @@ function sanitizeFilename(name: string): string {
 
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN)
+@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER)
 export class UserDocumentsController {
   constructor(private readonly usersService: UsersService) {}
 
   @Post('upload-document')
-  @Roles(Role.SUPER_ADMIN)
+  @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   @UseInterceptors(
     FileInterceptor('file', {
       limits: { fileSize: MAX_SIZE },

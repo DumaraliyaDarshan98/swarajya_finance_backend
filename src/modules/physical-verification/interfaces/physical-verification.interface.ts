@@ -39,6 +39,7 @@ export interface DocumentTypeVerification {
   documentPrimaryKey: string;
   remark: string;
   fileName: string;
+  fileUrl?: string;
 }
 
 export interface PhysicalReportPayload {

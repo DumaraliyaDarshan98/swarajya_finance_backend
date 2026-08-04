@@ -42,6 +42,16 @@ export class UsersController {
     return this.service.createClientUser(dto, req.user);
   }
 
+  @Get('me')
+  getMe(@Request() req: any) {
+    return this.service.getMe(req.user.sub);
+  }
+
+  @Patch('me')
+  updateMe(@Body() dto: UpdateInternalUserDto, @Request() req: any) {
+    return this.service.updateMe(req.user.sub, dto);
+  }
+
   @Get(':id')
   getOne(@Param('id') id: string, @Request() req: any) {
     return this.service.findOne(id, req.user);
