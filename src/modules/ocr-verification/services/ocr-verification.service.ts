@@ -3,18 +3,21 @@ import {
   ForbiddenException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { OcrVerification } from '../entities/ocr-verification.entity';
 import { ListOcrVerificationQueryDto } from '../dto/list-ocr-verification-query.dto';
 import { UpdateOcrVerificationDto } from '../dto/update-ocr-verification.dto';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { OcrService } from '../../verification/services/ocr.service';
+import { OcrNotificationGateway } from '../gateways/ocr-notification.gateway';
+import { RcuTriggersService } from '../../rcu-triggers/services/rcu-triggers.service';
 import { Role } from '../../../common/enums/role.enum';
 import type {
   OcrDocumentEntry,
@@ -81,10 +84,14 @@ const DOCUMENT_DEFINITIONS: {
 
 @Injectable()
 export class OcrVerificationService {
+  private readonly logger = new Logger(OcrVerificationService.name);
+
   constructor(
     @InjectRepository(OcrVerification)
     private repo: Repository<OcrVerification>,
     private ocrService: OcrService,
+    private ocrGateway: OcrNotificationGateway,
+    private rcuTriggersService: RcuTriggersService,
   ) {}
 
   private ensureUploadDir(): void {
@@ -109,9 +116,14 @@ export class OcrVerificationService {
       placeholder: def.placeholder,
       fileName: null,
       storedFileName: null,
+      mimeType: null,
       documentType: def.documentType,
       extractedData: null,
       extractedText: null,
+      confidence: null,
+      triggerResults: null,
+      checks: null,
+      isValid: null,
       ocrSuccess: false,
       ocrError: null,
       uploadedAt: null,
@@ -144,6 +156,10 @@ export class OcrVerificationService {
   private pickOcrPayload(ocrResponse: Record<string, unknown>): {
     extractedData: Record<string, unknown> | null;
     extractedText: string | null;
+    confidence: Record<string, number> | null;
+    triggerResults: any[] | null;
+    checks: any[] | null;
+    isValid: boolean | null;
   } {
     const data =
       ocrResponse && typeof ocrResponse === 'object' && 'data' in ocrResponse
@@ -151,13 +167,13 @@ export class OcrVerificationService {
         : ocrResponse;
 
     if (!data || typeof data !== 'object') {
-      return { extractedData: null, extractedText: null };
+      return { extractedData: null, extractedText: null, confidence: null, triggerResults: null, checks: null, isValid: null };
     }
 
     const extractedData =
       data.extractedData && typeof data.extractedData === 'object'
         ? (data.extractedData as Record<string, unknown>)
-        : (data as Record<string, unknown>);
+        : null;
 
     let extractedText: string | null = null;
     if (typeof data.extractedText === 'string') {
@@ -166,7 +182,16 @@ export class OcrVerificationService {
       extractedText = JSON.stringify(data.extractedText);
     }
 
-    return { extractedData, extractedText };
+    const confidence =
+      data.confidence && typeof data.confidence === 'object'
+        ? (data.confidence as Record<string, number>)
+        : null;
+
+    const triggerResults = Array.isArray(data.triggerResults) ? data.triggerResults : null;
+    const checks = Array.isArray(data.checks) ? data.checks : null;
+    const isValid = typeof data.isValid === 'boolean' ? data.isValid : null;
+
+    return { extractedData, extractedText, confidence, triggerResults, checks, isValid };
   }
 
   private saveFileToDisk(file: UploadedFileLike): string {
@@ -177,6 +202,19 @@ export class OcrVerificationService {
     const storedFileName = `${randomUUID()}-${this.sanitizeFilename(base)}.${ext}`;
     writeFileSync(join(OCR_UPLOAD_DIR, storedFileName), file.buffer);
     return storedFileName;
+  }
+
+  private inferMimeType(fileName: string | null | undefined): string | null {
+    const ext = (fileName ?? '').split('.').pop()?.toLowerCase() ?? '';
+    const mimeMap: Record<string, string> = {
+      pdf: 'application/pdf',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      jfif: 'image/jpeg',
+      png: 'image/png',
+      webp: 'image/webp',
+    };
+    return mimeMap[ext] ?? null;
   }
 
   async list(
@@ -370,28 +408,18 @@ export class OcrVerificationService {
     const storedFileName = this.saveFileToDisk(file);
     const originalName = file.originalname ?? storedFileName;
 
-    let ocrSuccess = false;
-    let ocrError: string | null = null;
-    let extractedData: Record<string, unknown> | null = null;
-    let extractedText: string | null = null;
-
-    try {
-      const ocrRes = await this.ocrService.extractSimple(file, doc.documentType);
-      const picked = this.pickOcrPayload((ocrRes.data ?? {}) as Record<string, unknown>);
-      extractedData = picked.extractedData;
-      extractedText = picked.extractedText;
-      ocrSuccess = true;
-    } catch (err: any) {
-      ocrError = err?.message ?? 'OCR extraction failed';
-    }
-
     Object.assign(doc, {
       fileName: originalName,
       storedFileName,
-      extractedData,
-      extractedText,
-      ocrSuccess,
-      ocrError,
+      mimeType: file.mimetype || this.inferMimeType(originalName),
+      extractedData: null,
+      extractedText: null,
+      confidence: null,
+      triggerResults: null,
+      checks: null,
+      isValid: null,
+      ocrSuccess: false,
+      ocrError: null,
       uploadedAt: new Date().toISOString(),
     });
 
@@ -399,9 +427,7 @@ export class OcrVerificationService {
     const saved = await this.repo.save(record);
     return {
       code: HttpStatus.OK,
-      message: ocrSuccess
-        ? 'Document uploaded and OCR extracted successfully'
-        : 'Document uploaded; OCR extraction failed',
+      message: 'Document uploaded successfully',
       data: saved,
     };
   }
@@ -450,22 +476,128 @@ export class OcrVerificationService {
       throw new BadRequestException('Upload at least one document before generating report');
     }
 
-    const hasOcrFailure = [...payload.documents, ...payload.extraDocuments].some(
-      (d) => d.storedFileName && !d.ocrSuccess,
+    record.status = 'UPLOADING';
+    record.progressMessage = 'Uploading documents...';
+    record.documentsPayload = payload;
+    await this.repo.save(record);
+
+    this.emitProgress(record);
+
+    this.processOcrInBackground(record.id, record.clientId).catch((err) =>
+      this.logger.error(`Background OCR failed for ${record.id}`, err),
     );
 
-    record.status = hasOcrFailure ? 'FAILED' : 'REPORT_GENERATED';
-    record.reportGeneratedAt = hasOcrFailure ? null : new Date();
-    record.documentsPayload = payload;
-
-    const saved = await this.repo.save(record);
     return {
       code: HttpStatus.OK,
-      message: hasOcrFailure
-        ? 'Report marked failed — one or more OCR extractions failed'
-        : 'OCR verification report generated successfully',
-      data: saved,
+      message: 'Report generation started. You can track progress on the listing page.',
+      data: record,
     };
+  }
+
+  private async processOcrInBackground(recordId: string, clientId: string): Promise<void> {
+    const record = await this.repo.findOne({ where: { id: recordId } });
+    if (!record) return;
+
+    const payload = this.payloadOf(record);
+    const allDocs = [...payload.documents, ...payload.extraDocuments].filter(
+      (d) => d.storedFileName,
+    );
+    const totalDocs = allDocs.length;
+
+    record.status = 'OCR_PROCESSING';
+    record.progressMessage = `OCR processing: 0 / ${totalDocs} documents...`;
+    await this.repo.save(record);
+    this.emitProgress(record);
+
+    let processed = 0;
+    let hasFailure = false;
+
+    for (const doc of allDocs) {
+      processed++;
+      record.progressMessage = `OCR processing: ${processed} / ${totalDocs} — ${doc.label}`;
+      await this.repo.save(record);
+      this.emitProgress(record);
+
+      try {
+        const filePath = join(OCR_UPLOAD_DIR, doc.storedFileName!);
+        if (!existsSync(filePath)) {
+          doc.ocrError = 'File not found on disk';
+          doc.ocrSuccess = false;
+          hasFailure = true;
+          continue;
+        }
+
+        const fileBuffer = readFileSync(filePath);
+        const resolvedMimeType =
+          doc.mimeType ||
+          this.inferMimeType(doc.fileName) ||
+          this.inferMimeType(doc.storedFileName);
+
+        if (!resolvedMimeType) {
+          doc.ocrError = 'Unsupported file type for OCR. Use PDF, JPG, JPEG, PNG, or WEBP.';
+          doc.ocrSuccess = false;
+          hasFailure = true;
+          record.documentsPayload = payload;
+          await this.repo.save(record);
+          this.logger.warn(`OCR skipped for "${doc.label}" (${doc.key}): unsupported file type`);
+          continue;
+        }
+
+        const rcuMatch = await this.rcuTriggersService.findOcrTriggersForDocumentType(
+          doc.documentType,
+        );
+        this.logger.log(
+          `RCU OCR triggers for "${doc.label}" (${doc.documentType}): matched=${rcuMatch.matchedKey ?? 'none'} fallbackOther=${rcuMatch.usedFallbackOther} count=${rcuMatch.triggers.length}`,
+        );
+
+        const ocrRes = await this.ocrService.extractSimple(
+          {
+            buffer: fileBuffer,
+            mimetype: resolvedMimeType,
+            originalname: doc.fileName ?? doc.storedFileName!,
+          },
+          doc.documentType,
+          rcuMatch.triggers,
+        );
+        const picked = this.pickOcrPayload((ocrRes.data ?? {}) as Record<string, unknown>);
+        doc.extractedData = picked.extractedData;
+        doc.extractedText = picked.extractedText;
+        doc.confidence = picked.confidence;
+        doc.triggerResults = picked.triggerResults;
+        doc.checks = picked.checks;
+        doc.isValid = picked.isValid;
+        doc.ocrSuccess = true;
+        doc.ocrError = null;
+      } catch (err: any) {
+        const errMsg = err?.message ?? 'OCR extraction failed';
+        doc.ocrError = errMsg;
+        doc.ocrSuccess = false;
+        hasFailure = true;
+        this.logger.warn(`OCR failed for "${doc.label}" (${doc.key}): ${errMsg}`);
+      }
+
+      record.documentsPayload = payload;
+      await this.repo.save(record);
+    }
+
+    const failedDocs = allDocs.filter((d) => d.storedFileName && !d.ocrSuccess);
+    const failedNames = failedDocs.map((d) => d.label).join(', ');
+    record.status = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
+    record.progressMessage = hasFailure
+      ? `Failed: ${failedNames}`
+      : 'Report generated successfully';
+    record.reportGeneratedAt = hasFailure ? null : new Date();
+    record.documentsPayload = payload;
+    await this.repo.save(record);
+    this.emitProgress(record);
+  }
+
+  private emitProgress(record: OcrVerification): void {
+    this.ocrGateway.emitProgress(record.clientId, {
+      id: record.id,
+      status: record.status,
+      progressMessage: record.progressMessage ?? '',
+    });
   }
 
   async delete(id: string, user: AuthedUser): Promise<APIResponseInterface<null>> {

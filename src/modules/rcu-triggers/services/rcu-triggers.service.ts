@@ -483,6 +483,55 @@ export class RcuTriggersService {
     };
   }
 
+  /**
+   * OCR lookup: match document type by string (key/label), require usedInOcr + isActive,
+   * then return triggers that are also usedInOcr + isActive.
+   * If no document type matches, fall back to the "other" OCR document type.
+   */
+  async findOcrTriggersForDocumentType(documentTypeHint: string): Promise<{
+    matchedKey: string | null;
+    matchedLabel: string | null;
+    usedFallbackOther: boolean;
+    triggers: Array<{
+      code: string;
+      text: string;
+      risk: RcuRiskLevel;
+      section: string | null;
+    }>;
+  }> {
+    const docs = await this.documentTypeRepo.find({
+      where: { isActive: true, usedInOcr: true },
+      relations: ['triggers'],
+      order: { sortOrder: 'ASC', label: 'ASC' },
+    });
+
+    const hint = documentTypeHint?.trim() || '';
+    let matched = this.pickBestDocumentTypeMatch(docs, hint);
+    let usedFallbackOther = false;
+
+    if (!matched) {
+      matched = this.pickBestDocumentTypeMatch(docs, 'other');
+      usedFallbackOther = !!matched;
+    }
+
+    const triggers = (matched?.triggers ?? [])
+      .filter((t) => t.isActive && t.usedInOcr)
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code))
+      .map((t) => ({
+        code: t.code,
+        text: t.text,
+        risk: t.risk,
+        section: t.section,
+      }));
+
+    return {
+      matchedKey: matched?.key ?? null,
+      matchedLabel: matched?.label ?? null,
+      usedFallbackOther,
+      triggers,
+    };
+  }
+
   // ---------- Helpers ----------
 
   private async requireCategory(id: string): Promise<RcuCategory> {
@@ -556,5 +605,96 @@ export class RcuTriggersService {
       take: 1,
     });
     return (last[0]?.sortOrder ?? -1) + 1;
+  }
+
+  private normalizeDocTypeText(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/[_/]+/g, ' ')
+      .replace(/-/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private compactDocTypeText(value: string): string {
+    return this.normalizeDocTypeText(value).replace(/\s+/g, '');
+  }
+
+  private hintVariants(hint: string): string[] {
+    const normalized = this.normalizeDocTypeText(hint);
+    const compact = this.compactDocTypeText(hint);
+    const aliases: Record<string, string[]> = {
+      pan: ['pan', 'pancard'],
+      pancard: ['pan', 'pancard'],
+      aadhaar: ['aadhaar', 'aadhar', 'aadhaarcard', 'aadharcard'],
+      aadhar: ['aadhaar', 'aadhar', 'aadhaarcard', 'aadharcard'],
+      aadhaarcard: ['aadhaar', 'aadhaarcard'],
+      salaryslip: ['salaryslip', 'salarycertificate'],
+      form16: ['form16'],
+      bankstatement: ['bankstatement', 'bankstmt', 'bankstmtmanual', 'bankstmtdigital', 'bankstmtcoded'],
+      accountstatement: ['bankstatement', 'bankstmt', 'bankstmtmanual', 'bankstmtdigital', 'bankstmtcoded'],
+      other: ['other', 'others', 'otherdocs'],
+      others: ['other', 'others', 'otherdocs'],
+      addressproof: ['other', 'others', 'otherdocs'],
+      ownershipdeed: ['other', 'others', 'otherdocs'],
+      agreement: ['rentagreement', 'other', 'others', 'otherdocs'],
+      agreementcopy: ['rentagreement', 'other', 'others', 'otherdocs'],
+    };
+
+    const variants = new Set<string>([
+      normalized,
+      compact,
+      normalized.replace('statement', 'stmt'),
+      compact.replace('statement', 'stmt'),
+      ...(aliases[compact] ?? []),
+    ]);
+
+    return [...variants].filter(Boolean);
+  }
+
+  private scoreDocumentTypeMatch(
+    hintVariants: string[],
+    key: string,
+    label: string,
+  ): number {
+    const kn = this.normalizeDocTypeText(key);
+    const ln = this.normalizeDocTypeText(label);
+    const kc = this.compactDocTypeText(key);
+    const lc = this.compactDocTypeText(label);
+    let best = 0;
+
+    for (const hint of hintVariants) {
+      const hc = hint.replace(/\s+/g, '');
+      if (!hc) continue;
+      if (kn === hint || ln === hint || kc === hc || lc === hc) {
+        best = Math.max(best, 100);
+      } else if (kc.startsWith(hc) || lc.startsWith(hc)) {
+        best = Math.max(best, 85);
+      } else if (kc.includes(hc) || lc.includes(hc)) {
+        best = Math.max(best, 70);
+      } else if (hc.includes(kc) && kc.length >= 4) {
+        best = Math.max(best, 60);
+      }
+    }
+
+    return best;
+  }
+
+  private pickBestDocumentTypeMatch(
+    docs: RcuDocumentType[],
+    hint: string,
+  ): RcuDocumentType | null {
+    const variants = this.hintVariants(hint);
+    let best: { doc: RcuDocumentType; score: number } | null = null;
+
+    for (const doc of docs) {
+      const score = this.scoreDocumentTypeMatch(variants, doc.key, doc.label);
+      if (score < 60) continue;
+      if (!best || score > best.score) {
+        best = { doc, score };
+      }
+    }
+
+    return best?.doc ?? null;
   }
 }

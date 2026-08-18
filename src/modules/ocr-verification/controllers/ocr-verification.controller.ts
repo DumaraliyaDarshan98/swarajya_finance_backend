@@ -30,12 +30,15 @@ type AuthedReq = { user: { role: Role; clientId?: string } };
 type UploadedFileLike = { buffer: Buffer; mimetype?: string; originalname?: string };
 
 const MAX_SIZE = 10 * 1024 * 1024;
-const ALLOWED_MIMES = [
+const ALLOWED_DOC_MIMES = [
   'application/pdf',
   'image/jpeg',
   'image/png',
   'image/jpg',
   'image/webp',
+];
+const ALLOWED_MERGED_MIMES = [
+  ...ALLOWED_DOC_MIMES,
   'application/zip',
   'application/x-zip-compressed',
 ];
@@ -103,8 +106,13 @@ export class OcrVerificationController {
       storage: memoryStorage(),
       limits: { fileSize: MAX_SIZE },
       fileFilter: (_req, file, cb) => {
-        if (!file.mimetype || !ALLOWED_MIMES.includes(file.mimetype)) {
-          return cb(new BadRequestException('Invalid file type'), false);
+        if (!file.mimetype || !ALLOWED_DOC_MIMES.includes(file.mimetype)) {
+          return cb(
+            new BadRequestException(
+              'Invalid file type. Use PDF, JPG, JPEG, PNG, or WEBP for OCR documents.',
+            ),
+            false,
+          );
         }
         cb(null, true);
       },
@@ -133,7 +141,7 @@ export class OcrVerificationController {
       storage: memoryStorage(),
       limits: { fileSize: MAX_SIZE },
       fileFilter: (_req, file, cb) => {
-        if (!file.mimetype || !ALLOWED_MIMES.includes(file.mimetype)) {
+        if (!file.mimetype || !ALLOWED_MERGED_MIMES.includes(file.mimetype)) {
           return cb(new BadRequestException('Invalid file type'), false);
         }
         cb(null, true);

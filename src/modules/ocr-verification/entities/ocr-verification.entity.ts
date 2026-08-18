@@ -31,6 +31,9 @@ export class OcrVerification {
   @Column({ type: 'varchar', length: 50, default: 'DRAFT' })
   status: OcrVerificationStatus;
 
+  @Column({ name: 'progress_message', type: 'varchar', length: 500, nullable: true })
+  progressMessage: string | null;
+
   @Column({ name: 'report_generated_at', type: 'timestamp', nullable: true })
   reportGeneratedAt: Date | null;
 

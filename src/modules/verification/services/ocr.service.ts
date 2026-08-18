@@ -3,10 +3,17 @@ import {
   BadRequestException,
   HttpStatus,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import type { APIResponseInterface } from '../../../common/interfaces/response.interface';
 
-type OcrExtractSimpleResponse = Record<string, unknown>;
+export type OcrExtractResponse = Record<string, unknown>;
+export type OcrRcuTriggerPayload = {
+  code: string;
+  text: string;
+  risk: string;
+  section?: string | null;
+};
 type UploadedFileLike = {
   buffer: Buffer;
   mimetype?: string;
@@ -15,14 +22,19 @@ type UploadedFileLike = {
 
 @Injectable()
 export class OcrService {
-  private readonly endpoint = 'https://ocr.swarajyarac.com/api/document/extract-simple';
-  
-  // private readonly endpoint = 'http://localhost:5000/api/document/extract-simple';
-  
+  private readonly logger = new Logger(OcrService.name);
+
+  private readonly verifyEndpoint = 'http://localhost:3300/api/document/verify';
+  // private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/extract-simple';
+
+  /**
+   * Calls the full /verify endpoint which returns extractedData, triggerResults, checks, confidence.
+   */
   async extractSimple(
     file: UploadedFileLike | undefined,
     documentType: string | undefined,
-  ): Promise<APIResponseInterface<OcrExtractSimpleResponse>> {
+    rcuTriggers?: OcrRcuTriggerPayload[],
+  ): Promise<APIResponseInterface<OcrExtractResponse>> {
     if (!file) throw new BadRequestException('file is required');
     if (!documentType?.trim())
       throw new BadRequestException('documentType is required');
@@ -31,13 +43,18 @@ export class OcrService {
     const blob = new Blob([new Uint8Array(file.buffer)], {
       type: file.mimetype || 'application/octet-stream',
     });
-    form.append('file', blob);
+    const filename = file.originalname || 'document.pdf';
+    form.append('file', blob, filename);
     form.append('documentType', documentType.trim());
+    form.append('useRcuTriggers', 'true');
+    form.append('triggers', JSON.stringify(rcuTriggers ?? []));
 
     let res: Response;
     try {
-      res = await fetch(this.endpoint, { method: 'POST', body: form });
+      res = await fetch(this.verifyEndpoint, { method: 'POST', body: form });
+      this.logger.log(`OCR /verify response status: ${res.status} for ${documentType}`);
     } catch (_e) {
+      this.logger.error('Failed to reach OCR service', _e);
       throw new BadGatewayException('Failed to reach OCR service');
     }
 
@@ -59,7 +76,7 @@ export class OcrService {
     return {
       code: HttpStatus.OK,
       message: 'OCR extraction completed',
-      data: (body ?? {}) as OcrExtractSimpleResponse,
+      data: (body ?? {}) as OcrExtractResponse,
     };
   }
 }
