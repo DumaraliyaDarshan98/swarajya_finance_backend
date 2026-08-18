@@ -24,6 +24,12 @@ export class FieldAgentWallet {
   @Column({ type: 'decimal', precision: 12, scale: 2, default: 0 })
   balance: number;
 
+  @Column({ name: 'reserved_balance', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  reservedBalance: number;
+
+  @Column({ name: 'total_withdrawn', type: 'decimal', precision: 12, scale: 2, default: 0 })
+  totalWithdrawn: number;
+
   @Column({ name: 'total_earned', type: 'decimal', precision: 12, scale: 2, default: 0 })
   totalEarned: number;
 

@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join, extname } from 'path';
 import { randomUUID } from 'crypto';
@@ -21,6 +21,7 @@ import { APIResponseInterface } from '../../../common/interfaces/response.interf
 import { Role } from '../../../common/enums/role.enum';
 import { User } from '../../user/entities/user.entity';
 import { FieldAssistant } from '../../field-assistance/entities/field-assistant.entity';
+import { ListAgentVisitsQueryDto } from '../dto/list-agent-visits-query.dto';
 import {
   allVisitsApproved,
   buildVisitsFromParent,
@@ -137,6 +138,114 @@ export class PhysicalVerificationVisitService {
       data: list,
       pagination: { total, page, pagePerRecord: limit },
     };
+  }
+
+  async listAgentVisitsForAdmin(
+    query: ListAgentVisitsQueryDto,
+    user: AuthedUser,
+  ): Promise<
+    APIResponseInterface<PhysicalVerificationVisit[]> & {
+      counts?: {
+        assigned: number;
+        inProgress: number;
+        pending: number;
+        completed: number;
+        all: number;
+      };
+    }
+  > {
+    if (user.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Only super admin can view agent visits');
+    }
+
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 10));
+    const skip = (page - 1) * limit;
+    const tab = query.tab ?? 'all';
+
+    const countsQb = this.visitRepo
+      .createQueryBuilder('v')
+      .leftJoin('v.parent', 'parent')
+      .select('v.status', 'visitStatus')
+      .addSelect('parent.status', 'parentStatus')
+      .addSelect('COUNT(*)', 'count')
+      .where('v.assigned_field_agent_user_id = :agentUserId', {
+        agentUserId: query.fieldAgentUserId,
+      })
+      .groupBy('v.status')
+      .addGroupBy('parent.status');
+
+    const countRows = await countsQb.getRawMany<{
+      visitStatus: string;
+      parentStatus: string | null;
+      count: string;
+    }>();
+
+    const counts = { assigned: 0, inProgress: 0, pending: 0, completed: 0, all: 0 };
+    for (const row of countRows) {
+      const n = Number(row.count) || 0;
+      counts.all += n;
+      const bucket = this.agentVisitTab(row.visitStatus, row.parentStatus);
+      counts[bucket] += n;
+    }
+
+    const qb = this.visitRepo
+      .createQueryBuilder('v')
+      .leftJoinAndSelect('v.parent', 'parent')
+      .leftJoinAndSelect('parent.client', 'client')
+      .where('v.assigned_field_agent_user_id = :agentUserId', {
+        agentUserId: query.fieldAgentUserId,
+      })
+      .orderBy('v.updatedAt', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    this.applyAgentVisitTabFilter(qb, tab);
+
+    const [list, total] = await qb.getManyAndCount();
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Agent visits fetched successfully',
+      data: list,
+      pagination: { total, page, pagePerRecord: limit },
+      counts,
+    };
+  }
+
+  private agentVisitTab(
+    visitStatus: string,
+    parentStatus?: string | null,
+  ): 'assigned' | 'inProgress' | 'pending' | 'completed' {
+    if (parentStatus === 'REPORT_GENERATED' || visitStatus === 'APPROVED' || visitStatus === 'REPORT_GENERATED') {
+      return 'completed';
+    }
+    if (visitStatus === 'AGENT_ASSIGNED') return 'assigned';
+    if (visitStatus === 'AGENT_DRAFT') return 'inProgress';
+    return 'pending';
+  }
+
+  private applyAgentVisitTabFilter(
+    qb: SelectQueryBuilder<PhysicalVerificationVisit>,
+    tab: string,
+  ): void {
+    if (tab === 'all') return;
+    if (tab === 'completed') {
+      qb.andWhere(
+        `(parent.status = 'REPORT_GENERATED' OR v.status IN ('APPROVED', 'REPORT_GENERATED'))`,
+      );
+      return;
+    }
+    qb.andWhere(`(parent.status IS NULL OR parent.status != 'REPORT_GENERATED')`);
+    if (tab === 'assigned') {
+      qb.andWhere(`v.status = 'AGENT_ASSIGNED'`);
+      return;
+    }
+    if (tab === 'inprogress') {
+      qb.andWhere(`v.status = 'AGENT_DRAFT'`);
+      return;
+    }
+    qb.andWhere(`v.status IN ('AGENT_SUBMITTED', 'REJECTED')`);
   }
 
   async getVisitById(

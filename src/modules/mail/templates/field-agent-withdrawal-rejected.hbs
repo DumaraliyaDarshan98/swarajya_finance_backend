@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #212529; line-height: 1.5;">
+    <h2>Withdrawal Request Rejected</h2>
+    <p>Hello {{name}},</p>
+    <p>
+      Your wallet withdrawal request of <strong>₹{{amount}}</strong> has been
+      <strong>rejected</strong>. The reserved amount has been released back to your available
+      wallet balance.
+    </p>
+    <p><b>Request ID:</b> {{requestId}}</p>
+    {{#if adminRemarks}}
+    <p><b>Reason:</b> {{adminRemarks}}</p>
+    {{/if}}
+    <p>You may submit a new withdrawal request from your wallet if needed.</p>
+  </body>
+</html>

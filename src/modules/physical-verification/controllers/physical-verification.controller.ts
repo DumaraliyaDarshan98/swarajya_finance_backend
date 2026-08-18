@@ -26,6 +26,7 @@ import { PhysicalVerificationVisitService } from '../services/physical-verificat
 import { TelephonyService } from '../../telephony/telephony.service';
 import { UpsertPhysicalVerificationDto } from '../dto/upsert-physical-verification.dto';
 import { ListPhysicalVerificationQueryDto } from '../dto/list-physical-verification-query.dto';
+import { ListAgentVisitsQueryDto } from '../dto/list-agent-visits-query.dto';
 import { AssignFieldAgentDto } from '../dto/assign-field-agent.dto';
 import { SaveFieldAgentSubmissionDto } from '../dto/save-field-agent-submission.dto';
 import { SaveVisitFieldAgentSubmissionDto } from '../dto/save-visit-field-agent-submission.dto';
@@ -60,6 +61,12 @@ export class PhysicalVerificationController {
   @Get('stats')
   stats(@Request() req: AuthedReq, @Query('clientId') clientId?: string) {
     return this.service.stats(req.user, clientId);
+  }
+
+  @Get('admin/agent-visits')
+  @Roles(Role.SUPER_ADMIN)
+  listAgentVisits(@Query() query: ListAgentVisitsQueryDto, @Request() req: AuthedReq) {
+    return this.visitService.listAgentVisitsForAdmin(query, req.user);
   }
 
   @Get('visits/assigned')

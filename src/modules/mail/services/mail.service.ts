@@ -83,4 +83,50 @@ export class MailService {
       { name, email, fieldAgentId, password, loginUrl },
     );
   }
+
+  async sendFieldAgentWithdrawalApproved(params: {
+    email: string;
+    name: string;
+    amount: number;
+    requestId: string;
+    bankName: string;
+    accountNumber: string;
+    ifsc: string;
+    adminRemarks?: string | null;
+  }) {
+    return this.sendMail(
+      params.email,
+      'Your Wallet Withdrawal Request Was Approved',
+      'field-agent-withdrawal-approved',
+      {
+        name: params.name,
+        amount: params.amount,
+        requestId: params.requestId,
+        bankName: params.bankName,
+        accountNumber: params.accountNumber,
+        ifsc: params.ifsc,
+        adminRemarks: params.adminRemarks || '',
+      },
+    );
+  }
+
+  async sendFieldAgentWithdrawalRejected(params: {
+    email: string;
+    name: string;
+    amount: number;
+    requestId: string;
+    adminRemarks?: string | null;
+  }) {
+    return this.sendMail(
+      params.email,
+      'Your Wallet Withdrawal Request Was Rejected',
+      'field-agent-withdrawal-rejected',
+      {
+        name: params.name,
+        amount: params.amount,
+        requestId: params.requestId,
+        adminRemarks: params.adminRemarks || '',
+      },
+    );
+  }
 }

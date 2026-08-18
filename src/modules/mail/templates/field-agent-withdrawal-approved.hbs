@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #212529; line-height: 1.5;">
+    <h2>Withdrawal Request Approved</h2>
+    <p>Hello {{name}},</p>
+    <p>
+      Your wallet withdrawal request of <strong>₹{{amount}}</strong> has been
+      <strong>approved</strong>. The amount has been deducted from your wallet and will be
+      transferred to the account below.
+    </p>
+    <p><b>Request ID:</b> {{requestId}}</p>
+    <p><b>Bank:</b> {{bankName}}</p>
+    <p><b>Account Number:</b> {{accountNumber}}</p>
+    <p><b>IFSC:</b> {{ifsc}}</p>
+    {{#if adminRemarks}}
+    <p><b>Admin remarks:</b> {{adminRemarks}}</p>
+    {{/if}}
+    <p>If you have any questions, please contact support.</p>
+  </body>
+</html>
