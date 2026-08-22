@@ -24,8 +24,9 @@ type UploadedFileLike = {
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
 
-  private readonly verifyEndpoint = 'http://localhost:3300/api/document/verify';
+  // private readonly verifyEndpoint = 'http://localhost:3300/api/document/verify';
   // private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/extract-simple';
+  private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/verify';
 
   /**
    * Calls the full /verify endpoint which returns extractedData, triggerResults, checks, confidence.
