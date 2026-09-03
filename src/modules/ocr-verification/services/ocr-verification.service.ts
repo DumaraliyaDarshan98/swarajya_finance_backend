@@ -9,7 +9,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { join } from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { OcrVerification } from '../entities/ocr-verification.entity';
 import { ListOcrVerificationQueryDto } from '../dto/list-ocr-verification-query.dto';
@@ -20,8 +20,11 @@ import { OcrNotificationGateway } from '../gateways/ocr-notification.gateway';
 import { RcuTriggersService } from '../../rcu-triggers/services/rcu-triggers.service';
 import { Role } from '../../../common/enums/role.enum';
 import type {
+  OcrCaseForensicSummary,
   OcrDocumentEntry,
   OcrDocumentsPayload,
+  OcrForensicSummary,
+  OcrForensicVerdict,
   OcrVerificationStatus,
 } from '../interfaces/ocr-documents-payload.interface';
 
@@ -172,6 +175,11 @@ export class OcrVerificationService {
     triggerResults: any[] | null;
     checks: any[] | null;
     isValid: boolean | null;
+    fileHash: string | null;
+    fileSizeBytes: number | null;
+    pdfMetadata: Record<string, unknown> | null;
+    forensicSignals: any[] | null;
+    forensicSummary: OcrForensicSummary | null;
   } {
     const data =
       ocrResponse && typeof ocrResponse === 'object' && 'data' in ocrResponse
@@ -179,7 +187,19 @@ export class OcrVerificationService {
         : ocrResponse;
 
     if (!data || typeof data !== 'object') {
-      return { extractedData: null, extractedText: null, confidence: null, triggerResults: null, checks: null, isValid: null };
+      return {
+        extractedData: null,
+        extractedText: null,
+        confidence: null,
+        triggerResults: null,
+        checks: null,
+        isValid: null,
+        fileHash: null,
+        fileSizeBytes: null,
+        pdfMetadata: null,
+        forensicSignals: null,
+        forensicSummary: null,
+      };
     }
 
     const extractedData =
@@ -202,18 +222,93 @@ export class OcrVerificationService {
     const triggerResults = Array.isArray(data.triggerResults) ? data.triggerResults : null;
     const checks = Array.isArray(data.checks) ? data.checks : null;
     const isValid = typeof data.isValid === 'boolean' ? data.isValid : null;
+    const fileHash = typeof data.fileHash === 'string' ? data.fileHash : null;
+    const fileSizeBytes =
+      typeof data.fileSizeBytes === 'number' ? data.fileSizeBytes : null;
+    const pdfMetadata =
+      data.pdfMetadata && typeof data.pdfMetadata === 'object'
+        ? (data.pdfMetadata as Record<string, unknown>)
+        : null;
+    const forensicSignals = Array.isArray(data.forensicSignals)
+      ? data.forensicSignals
+      : null;
+    const forensicSummary =
+      data.forensicSummary && typeof data.forensicSummary === 'object'
+        ? (data.forensicSummary as OcrForensicSummary)
+        : null;
 
-    return { extractedData, extractedText, confidence, triggerResults, checks, isValid };
+    return {
+      extractedData,
+      extractedText,
+      confidence,
+      triggerResults,
+      checks,
+      isValid,
+      fileHash,
+      fileSizeBytes,
+      pdfMetadata,
+      forensicSignals,
+      forensicSummary,
+    };
   }
 
-  private saveFileToDisk(file: UploadedFileLike): string {
+  private saveFileToDisk(file: UploadedFileLike): { storedFileName: string; fileHash: string } {
     this.ensureUploadDir();
     const original = file.originalname || 'file';
     const ext = original.includes('.') ? original.split('.').pop() : 'bin';
     const base = original.replace(/\.[^/.]+$/, '');
     const storedFileName = `${randomUUID()}-${this.sanitizeFilename(base)}.${ext}`;
     writeFileSync(join(OCR_UPLOAD_DIR, storedFileName), file.buffer);
-    return storedFileName;
+    const fileHash = createHash('sha256').update(file.buffer).digest('hex');
+    return { storedFileName, fileHash };
+  }
+
+  private fuseCaseForensicSummary(docs: OcrDocumentEntry[]): OcrCaseForensicSummary | null {
+    const withSummary = docs.filter((d) => d.forensicSummary);
+    if (!withSummary.length) return null;
+
+    let worst = withSummary[0];
+    for (const d of withSummary) {
+      const dScore = d.forensicSummary!.riskScore ?? 0;
+      const wScore = worst.forensicSummary!.riskScore ?? 0;
+      const dRank = this.verdictRank(d.forensicSummary!.verdict);
+      const wRank = this.verdictRank(worst.forensicSummary!.verdict);
+      if (dScore > wScore || (dScore === wScore && dRank > wRank)) {
+        worst = d;
+      }
+    }
+
+    const reasons = withSummary
+      .flatMap((d) =>
+        (d.forensicSummary?.reasons ?? []).map((r) => `${d.label}: ${r}`),
+      )
+      .slice(0, 15);
+
+    return {
+      riskScore: worst.forensicSummary!.riskScore,
+      verdict: worst.forensicSummary!.verdict,
+      verdictLabel: worst.forensicSummary!.verdictLabel,
+      reasons,
+      documentCount: docs.length,
+      worstDocumentKey: worst.key,
+    };
+  }
+
+  private verdictRank(v: OcrForensicVerdict | undefined): number {
+    switch (v) {
+      case 'TEMP':
+        return 5;
+      case 'SUSPICIOUS':
+        return 4;
+      case 'MANUAL_REVIEW':
+        return 3;
+      case 'LIKELY_GENUINE':
+        return 2;
+      case 'GENUINE':
+        return 1;
+      default:
+        return 0;
+    }
   }
 
   private inferMimeType(fileName: string | null | undefined): string | null {
@@ -434,12 +529,14 @@ export class OcrVerificationService {
       if (doc) {
         this.unlinkStoredFile(doc.storedFileName);
         const file = validFiles[0];
-        const storedFileName = this.saveFileToDisk(file);
-        const originalName = file.originalname ?? storedFileName;
+        const savedFile = this.saveFileToDisk(file);
+        const originalName = file.originalname ?? savedFile.storedFileName;
         Object.assign(doc, {
           fileName: originalName,
-          storedFileName,
+          storedFileName: savedFile.storedFileName,
           mimeType: file.mimetype || this.inferMimeType(originalName),
+          fileHash: savedFile.fileHash,
+          fileSizeBytes: file.buffer.length,
           extractedData: null,
           extractedText: null,
           confidence: null,
@@ -448,6 +545,9 @@ export class OcrVerificationService {
           isValid: null,
           ocrSuccess: false,
           ocrError: null,
+          forensicSignals: null,
+          forensicSummary: null,
+          pdfMetadata: null,
           uploadedAt: new Date().toISOString(),
         });
         record.documentsPayload = payload;
@@ -461,15 +561,15 @@ export class OcrVerificationService {
     }
 
     for (const file of validFiles) {
-      const storedFileName = this.saveFileToDisk(file);
-      const originalName = file.originalname ?? storedFileName;
+      const savedFile = this.saveFileToDisk(file);
+      const originalName = file.originalname ?? savedFile.storedFileName;
       const key = `doc_${randomUUID()}`;
       payload.documents.push({
         key,
         label: originalName,
         placeholder: 'Uploaded document',
         fileName: originalName,
-        storedFileName,
+        storedFileName: savedFile.storedFileName,
         mimeType: file.mimetype || this.inferMimeType(originalName),
         documentType: 'other',
         extractedData: null,
@@ -480,6 +580,11 @@ export class OcrVerificationService {
         isValid: null,
         ocrSuccess: false,
         ocrError: null,
+        fileHash: savedFile.fileHash,
+        fileSizeBytes: file.buffer.length,
+        pdfMetadata: null,
+        forensicSignals: null,
+        forensicSummary: null,
         uploadedAt: new Date().toISOString(),
       });
     }
@@ -551,11 +656,11 @@ export class OcrVerificationService {
     if (payload.mergedFile?.storedFileName) {
       this.unlinkStoredFile(payload.mergedFile.storedFileName);
     }
-    const storedFileName = this.saveFileToDisk(file);
+    const savedFile = this.saveFileToDisk(file);
 
     payload.mergedFile = {
-      fileName: file.originalname ?? storedFileName,
-      storedFileName,
+      fileName: file.originalname ?? savedFile.storedFileName,
+      storedFileName: savedFile.storedFileName,
       uploadedAt: new Date().toISOString(),
     };
 
@@ -709,8 +814,8 @@ export class OcrVerificationService {
       await this.repo.save(record);
     }
 
-    // --- Phase 3: generate OCR prompt + run verification with triggers ---
-    record.progressMessage = `Running OCR with triggers: 0 / ${totalDocs}...`;
+    // --- Phase 3: generate OCR prompt + run verification with triggers + forensics ---
+    record.progressMessage = `Running OCR + forensics: 0 / ${totalDocs}...`;
     await this.repo.save(record);
     this.emitProgress(record);
 
@@ -723,8 +828,8 @@ export class OcrVerificationService {
       const triggerCount = bundle.triggers.length;
       record.progressMessage =
         triggerCount > 0
-          ? `Running OCR with triggers: ${processed} / ${totalDocs} — ${doc.label} (${triggerCount} triggers)`
-          : `Running OCR: ${processed} / ${totalDocs} — ${doc.label} (no RCU triggers matched)`;
+          ? `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label} (${triggerCount} triggers)`
+          : `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label}`;
       await this.repo.save(record);
       this.emitProgress(record);
 
@@ -775,11 +880,21 @@ export class OcrVerificationService {
         doc.triggerResults = picked.triggerResults;
         doc.checks = picked.checks;
         doc.isValid = picked.isValid;
+        doc.fileHash = picked.fileHash ?? doc.fileHash ?? null;
+        doc.fileSizeBytes = picked.fileSizeBytes ?? doc.fileSizeBytes ?? null;
+        doc.pdfMetadata = picked.pdfMetadata;
+        doc.forensicSignals = picked.forensicSignals;
+        doc.forensicSummary = picked.forensicSummary;
         doc.ocrSuccess = true;
         doc.ocrError = null;
         if (triggerCount === 0) {
           this.logger.warn(
             `OCR completed for "${doc.label}" but no RCU triggers matched (documentType=${doc.documentType}). Ensure the RCU document type is Active + used in OCR and its name resembles the identified type.`,
+          );
+        }
+        if (picked.forensicSummary) {
+          this.logger.log(
+            `Forensics for "${doc.label}": verdict=${picked.forensicSummary.verdict} score=${picked.forensicSummary.riskScore}`,
           );
         }
       } catch (err: any) {
@@ -794,12 +909,23 @@ export class OcrVerificationService {
       await this.repo.save(record);
     }
 
+    // --- Phase 4: fuse case-level forensic verdict ---
+    record.progressMessage = 'Fusing forensic score & verdict...';
+    await this.repo.save(record);
+    this.emitProgress(record);
+
+    payload.caseForensicSummary = this.fuseCaseForensicSummary(allDocs);
+
     const failedDocs = allDocs.filter((d) => d.storedFileName && !d.ocrSuccess);
     const failedNames = failedDocs.map((d) => d.label).join(', ');
     record.status = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
+    const caseVerdict = payload.caseForensicSummary?.verdictLabel;
+    const caseScore = payload.caseForensicSummary?.riskScore;
     record.progressMessage = hasFailure
       ? `Failed: ${failedNames}`
-      : 'Report generated successfully';
+      : caseVerdict
+        ? `Report generated — ${caseVerdict} (risk ${caseScore}/100)`
+        : 'Report generated successfully';
     record.reportGeneratedAt = hasFailure ? null : new Date();
     record.documentsPayload = payload;
     await this.repo.save(record);

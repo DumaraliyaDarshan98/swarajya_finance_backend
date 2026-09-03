@@ -24,9 +24,11 @@ type UploadedFileLike = {
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
 
-  private readonly verifyEndpoint = 'http://localhost:3300/api/document/verify';
-  private readonly identifyEndpoint = 'http://localhost:3300/api/document/identify';
+  // private readonly verifyEndpoint = 'http://localhost:3300/api/document/verify';
+  // private readonly identifyEndpoint = 'http://localhost:3300/api/document/identify';
   // private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/extract-simple';
+  private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/verify';
+  private readonly identifyEndpoint = 'https://ocr.swarajyarac.com/api/document/identify';
 
   /**
    * Classify document type only (no full OCR / RCU).

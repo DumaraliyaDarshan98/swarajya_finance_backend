@@ -11,6 +11,7 @@ import { APIResponseInterface } from '../../../common/interfaces/response.interf
 import { FieldAssistant } from '../entities/field-assistant.entity';
 import { ListFieldAssistantsQueryDto } from '../dto/list-field-assistants-query.dto';
 import { UpsertFieldAssistantDto } from '../dto/field-assistant.dto';
+import { UpdateFieldAssistantInsuranceDto } from '../dto/update-field-assistant-insurance.dto';
 import { FieldAssistantAddress } from '../entities/field-assistant-address.entity';
 import { FieldAssistantEmergencyContact } from '../entities/field-assistant-emergency-contact.entity';
 import { FieldAssistantEducation } from '../entities/field-assistant-education.entity';
@@ -796,6 +797,56 @@ export class FieldAssistanceService {
       code: HttpStatus.OK,
       message: 'Field assistant deleted successfully',
       data: { id },
+    };
+  }
+
+  /**
+   * Save insurance details from field-agent view page (super admin).
+   */
+  async updateInsurance(
+    id: string,
+    dto: UpdateFieldAssistantInsuranceDto,
+    userId?: string,
+  ): Promise<APIResponseInterface<FieldAssistant>> {
+    const fa = await this.repo.findOne({
+      where: { id },
+      relations: [
+        'addresses',
+        'emergencyDetails',
+        'educationDetails',
+        'bankDetails',
+        'familyDetails',
+        'identificationDetails',
+        'previousEmploymentDetails',
+      ],
+    });
+    if (!fa) throw new NotFoundException('Field assistant not found');
+
+    const clean = (v?: string | null) => {
+      if (v == null) return null;
+      const t = String(v).trim();
+      return t ? t : null;
+    };
+
+    fa.insuranceDetails = {
+      providerCompany: clean(dto.providerCompany),
+      policyNumber: clean(dto.policyNumber),
+      insuranceType: clean(dto.insuranceType),
+      coverageAmount: clean(dto.coverageAmount),
+      premiumAmount: clean(dto.premiumAmount),
+      startDate: clean(dto.startDate),
+      endDate: clean(dto.endDate),
+      nomineeName: clean(dto.nomineeName),
+      nomineeRelation: clean(dto.nomineeRelation),
+      notes: clean(dto.notes),
+    };
+    fa.updatedBy = userId ?? fa.updatedBy ?? null;
+    const saved = await this.repo.save(fa);
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Insurance details saved successfully',
+      data: saved,
     };
   }
 
