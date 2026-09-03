@@ -10,7 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { OcrVerification } from '../entities/ocr-verification.entity';
 import { ListOcrVerificationQueryDto } from '../dto/list-ocr-verification-query.dto';
 import { UpdateOcrVerificationDto } from '../dto/update-ocr-verification.dto';
@@ -35,51 +35,26 @@ type UploadedFileLike = {
 
 export const OCR_UPLOAD_DIR = join(process.cwd(), 'uploads', 'ocr-verifications');
 
-const DOCUMENT_DEFINITIONS: {
-  key: string;
-  label: string;
-  placeholder: string;
+/** Maps Gemini identify labels → internal OCR / RCU documentType + display label. */
+const IDENTIFIED_TYPE_MAP: Array<{
+  match: RegExp;
   documentType: string;
-}[] = [
-  { key: 'pan', label: 'PAN Card', placeholder: 'Upload PAN card', documentType: 'pan' },
-  { key: 'aadhaar', label: 'Aadhaar Card', placeholder: 'Upload Aadhar card', documentType: 'aadhaar' },
-  {
-    key: 'addressProof',
-    label: 'Address Proof',
-    placeholder: 'Upload address proof',
-    documentType: 'other',
-  },
-  {
-    key: 'salarySlip',
-    label: 'Salary Slip / Joining Letter',
-    placeholder: 'Upload Salary Slip / Joining Letter',
-    documentType: 'salary slip',
-  },
-  {
-    key: 'ownershipDeed',
-    label: 'Ownership / Partnership Deed',
-    placeholder: 'Ownership / Partnership deed',
-    documentType: 'other',
-  },
-  { key: 'form16', label: 'Form 16', placeholder: 'Upload from 16', documentType: 'form 16' },
-  {
-    key: 'accountStatement',
-    label: 'Account Statement',
-    placeholder: 'Upload account statement',
-    documentType: 'bank statement',
-  },
-  {
-    key: 'agreement',
-    label: 'Agreement Copy',
-    placeholder: 'Upload Agreement Copy',
-    documentType: 'other',
-  },
-  {
-    key: 'others',
-    label: 'Others Document',
-    placeholder: 'Upload Others Document',
-    documentType: 'other',
-  },
+  label: string;
+}> = [
+  { match: /aadhaar|aadhar/i, documentType: 'aadhaar', label: 'Aadhaar Card' },
+  { match: /\bpan\b/i, documentType: 'pan', label: 'PAN Card' },
+  { match: /voter/i, documentType: 'voter card', label: 'Voter Card' },
+  { match: /driving|license|licence/i, documentType: 'driving license', label: 'Driving License' },
+  { match: /passport/i, documentType: 'passport', label: 'Passport' },
+  { match: /salary/i, documentType: 'salary slip', label: 'Salary Slip' },
+  { match: /form\s*16/i, documentType: 'form 16', label: 'Form 16' },
+  { match: /bank\s*statement|account\s*statement/i, documentType: 'bank statement', label: 'Bank Statement' },
+  { match: /\bitr\b/i, documentType: 'itr', label: 'ITR' },
+  { match: /\bgst\b/i, documentType: 'gst', label: 'GST' },
+  { match: /trade\s*license/i, documentType: 'trade license', label: 'Trade License' },
+  { match: /address\s*proof/i, documentType: 'address proof', label: 'Address Proof' },
+  { match: /agreement/i, documentType: 'agreement', label: 'Agreement Copy' },
+  { match: /ownership|partnership\s*deed|deed/i, documentType: 'ownership deed', label: 'Ownership Deed' },
 ];
 
 @Injectable()
@@ -132,10 +107,47 @@ export class OcrVerificationService {
 
   private defaultPayload(): OcrDocumentsPayload {
     return {
-      documents: DOCUMENT_DEFINITIONS.map((d) => this.emptyDocumentEntry(d)),
+      documents: [],
       extraDocuments: [],
       mergedFile: null,
     };
+  }
+
+  private normalizeIdentifiedType(raw: string): { documentType: string; label: string } {
+    const text = (raw || '').trim() || 'Other';
+    for (const row of IDENTIFIED_TYPE_MAP) {
+      if (row.match.test(text)) {
+        return { documentType: row.documentType, label: row.label };
+      }
+    }
+    if (/^other$/i.test(text) || /^unknown$/i.test(text)) {
+      return { documentType: 'other', label: 'Other Document' };
+    }
+    return { documentType: text.toLowerCase(), label: text };
+  }
+
+  private unlinkStoredFile(storedFileName: string | null | undefined): void {
+    if (!storedFileName?.trim()) return;
+    const filePath = join(OCR_UPLOAD_DIR, storedFileName);
+    if (existsSync(filePath)) {
+      try {
+        unlinkSync(filePath);
+      } catch (err) {
+        this.logger.warn(`Failed to delete OCR file ${storedFileName}`, err as Error);
+      }
+    }
+  }
+
+  /** Drop legacy empty fixed slots so the list is only uploaded files. */
+  private compactPayloadDocuments(payload: OcrDocumentsPayload): void {
+    payload.documents = (payload.documents ?? []).filter((d) => !!d.storedFileName);
+    payload.extraDocuments = (payload.extraDocuments ?? []).filter((d) => !!d.storedFileName);
+  }
+
+  private allUploadedDocs(payload: OcrDocumentsPayload): OcrDocumentEntry[] {
+    return [...(payload.documents ?? []), ...(payload.extraDocuments ?? [])].filter(
+      (d) => !!d.storedFileName,
+    );
   }
 
   private async findOwned(id: string, user: AuthedUser): Promise<OcrVerification> {
@@ -388,7 +400,7 @@ export class OcrVerificationService {
 
   async uploadDocument(
     id: string,
-    key: string,
+    key: string | undefined,
     isExtra: boolean,
     file: UploadedFileLike | undefined,
     user: AuthedUser,
@@ -396,38 +408,131 @@ export class OcrVerificationService {
     if (!file?.buffer?.length) {
       throw new BadRequestException('No file uploaded');
     }
+    return this.appendDocuments(id, [file], user, key, isExtra);
+  }
+
+  async appendDocuments(
+    id: string,
+    files: UploadedFileLike[],
+    user: AuthedUser,
+    replaceKey?: string,
+    isExtra = false,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    const validFiles = files.filter((f) => f?.buffer?.length);
+    if (!validFiles.length) {
+      throw new BadRequestException('No file uploaded');
+    }
 
     const record = await this.findOwned(id, user);
     const payload = this.payloadOf(record);
-    const list = isExtra ? payload.extraDocuments : payload.documents;
-    const doc = list.find((d) => d.key === key);
-    if (!doc) {
-      throw new BadRequestException(`Document slot "${key}" not found`);
+    this.compactPayloadDocuments(payload);
+
+    // Legacy: replace an existing slot by key when provided and found.
+    if (replaceKey?.trim() && validFiles.length === 1) {
+      const list = isExtra ? payload.extraDocuments : payload.documents;
+      const doc = list.find((d) => d.key === replaceKey.trim());
+      if (doc) {
+        this.unlinkStoredFile(doc.storedFileName);
+        const file = validFiles[0];
+        const storedFileName = this.saveFileToDisk(file);
+        const originalName = file.originalname ?? storedFileName;
+        Object.assign(doc, {
+          fileName: originalName,
+          storedFileName,
+          mimeType: file.mimetype || this.inferMimeType(originalName),
+          extractedData: null,
+          extractedText: null,
+          confidence: null,
+          triggerResults: null,
+          checks: null,
+          isValid: null,
+          ocrSuccess: false,
+          ocrError: null,
+          uploadedAt: new Date().toISOString(),
+        });
+        record.documentsPayload = payload;
+        const saved = await this.repo.save(record);
+        return {
+          code: HttpStatus.OK,
+          message: 'Document uploaded successfully',
+          data: saved,
+        };
+      }
     }
 
-    const storedFileName = this.saveFileToDisk(file);
-    const originalName = file.originalname ?? storedFileName;
+    for (const file of validFiles) {
+      const storedFileName = this.saveFileToDisk(file);
+      const originalName = file.originalname ?? storedFileName;
+      const key = `doc_${randomUUID()}`;
+      payload.documents.push({
+        key,
+        label: originalName,
+        placeholder: 'Uploaded document',
+        fileName: originalName,
+        storedFileName,
+        mimeType: file.mimetype || this.inferMimeType(originalName),
+        documentType: 'other',
+        extractedData: null,
+        extractedText: null,
+        confidence: null,
+        triggerResults: null,
+        checks: null,
+        isValid: null,
+        ocrSuccess: false,
+        ocrError: null,
+        uploadedAt: new Date().toISOString(),
+      });
+    }
 
-    Object.assign(doc, {
-      fileName: originalName,
-      storedFileName,
-      mimeType: file.mimetype || this.inferMimeType(originalName),
-      extractedData: null,
-      extractedText: null,
-      confidence: null,
-      triggerResults: null,
-      checks: null,
-      isValid: null,
-      ocrSuccess: false,
-      ocrError: null,
-      uploadedAt: new Date().toISOString(),
-    });
+    record.documentsPayload = payload;
+    if (record.status === 'REPORT_GENERATED' || record.status === 'FAILED') {
+      record.status = 'DRAFT';
+      record.progressMessage = null;
+      record.reportGeneratedAt = null;
+    }
+    const saved = await this.repo.save(record);
+    return {
+      code: HttpStatus.OK,
+      message:
+        validFiles.length > 1
+          ? `${validFiles.length} documents uploaded successfully`
+          : 'Document uploaded successfully',
+      data: saved,
+    };
+  }
 
+  async deleteDocument(
+    id: string,
+    key: string,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    if (!key?.trim()) {
+      throw new BadRequestException('Document key is required');
+    }
+
+    const record = await this.findOwned(id, user);
+    const payload = this.payloadOf(record);
+    const docKey = key.trim();
+
+    const fromMain = payload.documents.findIndex((d) => d.key === docKey);
+    const fromExtra = payload.extraDocuments.findIndex((d) => d.key === docKey);
+
+    let removed: OcrDocumentEntry | undefined;
+    if (fromMain >= 0) {
+      removed = payload.documents.splice(fromMain, 1)[0];
+    } else if (fromExtra >= 0) {
+      removed = payload.extraDocuments.splice(fromExtra, 1)[0];
+    } else {
+      throw new NotFoundException('Document not found on this verification');
+    }
+
+    this.unlinkStoredFile(removed.storedFileName);
+    this.compactPayloadDocuments(payload);
     record.documentsPayload = payload;
     const saved = await this.repo.save(record);
     return {
       code: HttpStatus.OK,
-      message: 'Document uploaded successfully',
+      message: 'Document deleted successfully',
       data: saved,
     };
   }
@@ -443,6 +548,9 @@ export class OcrVerificationService {
 
     const record = await this.findOwned(id, user);
     const payload = this.payloadOf(record);
+    if (payload.mergedFile?.storedFileName) {
+      this.unlinkStoredFile(payload.mergedFile.storedFileName);
+    }
     const storedFileName = this.saveFileToDisk(file);
 
     payload.mergedFile = {
@@ -466,18 +574,16 @@ export class OcrVerificationService {
   ): Promise<APIResponseInterface<OcrVerification>> {
     const record = await this.findOwned(id, user);
     const payload = this.payloadOf(record);
+    this.compactPayloadDocuments(payload);
 
-    const hasDoc =
-      payload.documents.some((d) => d.storedFileName) ||
-      payload.extraDocuments.some((d) => d.storedFileName) ||
-      !!payload.mergedFile?.storedFileName;
+    const hasDoc = this.allUploadedDocs(payload).length > 0;
 
     if (!hasDoc) {
       throw new BadRequestException('Upload at least one document before generating report');
     }
 
     record.status = 'UPLOADING';
-    record.progressMessage = 'Uploading documents...';
+    record.progressMessage = 'Preparing documents for identification...';
     record.documentsPayload = payload;
     await this.repo.save(record);
 
@@ -499,22 +605,126 @@ export class OcrVerificationService {
     if (!record) return;
 
     const payload = this.payloadOf(record);
-    const allDocs = [...payload.documents, ...payload.extraDocuments].filter(
-      (d) => d.storedFileName,
-    );
+    this.compactPayloadDocuments(payload);
+    const allDocs = this.allUploadedDocs(payload);
     const totalDocs = allDocs.length;
 
+    // --- Phase 1: identify each document ---
     record.status = 'OCR_PROCESSING';
-    record.progressMessage = `OCR processing: 0 / ${totalDocs} documents...`;
+    record.progressMessage = `Identifying documents: 0 / ${totalDocs}...`;
+    record.documentsPayload = payload;
+    await this.repo.save(record);
+    this.emitProgress(record);
+
+    let identified = 0;
+    for (const doc of allDocs) {
+      identified++;
+      record.progressMessage = `Identifying documents: ${identified} / ${totalDocs} — ${doc.fileName ?? doc.label}`;
+      await this.repo.save(record);
+      this.emitProgress(record);
+
+      try {
+        const filePath = join(OCR_UPLOAD_DIR, doc.storedFileName!);
+        if (!existsSync(filePath)) {
+          doc.documentType = 'other';
+          doc.label = doc.fileName || 'Other Document';
+          continue;
+        }
+
+        const fileBuffer = readFileSync(filePath);
+        const resolvedMimeType =
+          doc.mimeType ||
+          this.inferMimeType(doc.fileName) ||
+          this.inferMimeType(doc.storedFileName);
+
+        const identifyRes = await this.ocrService.identifyDocument({
+          buffer: fileBuffer,
+          mimetype: resolvedMimeType || undefined,
+          originalname: doc.fileName ?? doc.storedFileName!,
+        });
+        const mapped = this.normalizeIdentifiedType(
+          identifyRes.data?.documentType ?? 'Other',
+        );
+        doc.documentType = mapped.documentType;
+        doc.label = mapped.label;
+      } catch (err: any) {
+        this.logger.warn(
+          `Identify failed for "${doc.fileName}" (${doc.key}): ${err?.message ?? err}`,
+        );
+        doc.documentType = 'other';
+        doc.label = doc.fileName || 'Other Document';
+      }
+
+      record.documentsPayload = payload;
+      await this.repo.save(record);
+    }
+
+    // --- Phase 2: fetch RCU triggers for identified types ---
+    type DocTriggerBundle = {
+      doc: OcrDocumentEntry;
+      triggers: Array<{
+        code: string;
+        text: string;
+        risk: string;
+        section?: string | null;
+      }>;
+      matchedKey: string | null;
+      matchedLabel: string | null;
+    };
+    const bundles: DocTriggerBundle[] = [];
+
+    record.progressMessage = `Fetching triggers: 0 / ${totalDocs}...`;
+    await this.repo.save(record);
+    this.emitProgress(record);
+
+    let fetched = 0;
+    for (const doc of allDocs) {
+      fetched++;
+      record.progressMessage = `Fetching triggers: ${fetched} / ${totalDocs} — ${doc.label}`;
+      await this.repo.save(record);
+      this.emitProgress(record);
+
+      const rcuMatch = await this.rcuTriggersService.findOcrTriggersForDocumentType(
+        doc.documentType,
+        [doc.label, doc.fileName ?? ''],
+      );
+
+      this.logger.log(
+        `RCU OCR triggers for "${doc.label}" (${doc.documentType}): matched=${rcuMatch.matchedKey ?? 'none'} label=${rcuMatch.matchedLabel ?? 'none'} score=${rcuMatch.matchScore} fallbackOther=${rcuMatch.usedFallbackOther} count=${rcuMatch.triggers.length}`,
+      );
+
+      if (rcuMatch.matchedLabel && !rcuMatch.usedFallbackOther) {
+        // Prefer the admin-configured document type label when matched
+        doc.label = rcuMatch.matchedLabel;
+      }
+
+      bundles.push({
+        doc,
+        triggers: rcuMatch.triggers,
+        matchedKey: rcuMatch.matchedKey,
+        matchedLabel: rcuMatch.matchedLabel,
+      });
+
+      record.documentsPayload = payload;
+      await this.repo.save(record);
+    }
+
+    // --- Phase 3: generate OCR prompt + run verification with triggers ---
+    record.progressMessage = `Running OCR with triggers: 0 / ${totalDocs}...`;
     await this.repo.save(record);
     this.emitProgress(record);
 
     let processed = 0;
     let hasFailure = false;
 
-    for (const doc of allDocs) {
+    for (const bundle of bundles) {
+      const doc = bundle.doc;
       processed++;
-      record.progressMessage = `OCR processing: ${processed} / ${totalDocs} — ${doc.label}`;
+      const triggerCount = bundle.triggers.length;
+      record.progressMessage =
+        triggerCount > 0
+          ? `Running OCR with triggers: ${processed} / ${totalDocs} — ${doc.label} (${triggerCount} triggers)`
+          : `Running OCR: ${processed} / ${totalDocs} — ${doc.label} (no RCU triggers matched)`;
       await this.repo.save(record);
       this.emitProgress(record);
 
@@ -543,12 +753,11 @@ export class OcrVerificationService {
           continue;
         }
 
-        const rcuMatch = await this.rcuTriggersService.findOcrTriggersForDocumentType(
-          doc.documentType,
-        );
-        this.logger.log(
-          `RCU OCR triggers for "${doc.label}" (${doc.documentType}): matched=${rcuMatch.matchedKey ?? 'none'} fallbackOther=${rcuMatch.usedFallbackOther} count=${rcuMatch.triggers.length}`,
-        );
+        // Prefer RCU matched key as documentType for extraction prompts when available
+        const ocrDocumentType =
+          !bundle.matchedKey || bundle.matchedKey === 'other'
+            ? doc.documentType
+            : bundle.matchedKey.replace(/[_-]+/g, ' ');
 
         const ocrRes = await this.ocrService.extractSimple(
           {
@@ -556,8 +765,8 @@ export class OcrVerificationService {
             mimetype: resolvedMimeType,
             originalname: doc.fileName ?? doc.storedFileName!,
           },
-          doc.documentType,
-          rcuMatch.triggers,
+          ocrDocumentType,
+          bundle.triggers,
         );
         const picked = this.pickOcrPayload((ocrRes.data ?? {}) as Record<string, unknown>);
         doc.extractedData = picked.extractedData;
@@ -568,6 +777,11 @@ export class OcrVerificationService {
         doc.isValid = picked.isValid;
         doc.ocrSuccess = true;
         doc.ocrError = null;
+        if (triggerCount === 0) {
+          this.logger.warn(
+            `OCR completed for "${doc.label}" but no RCU triggers matched (documentType=${doc.documentType}). Ensure the RCU document type is Active + used in OCR and its name resembles the identified type.`,
+          );
+        }
       } catch (err: any) {
         const errMsg = err?.message ?? 'OCR extraction failed';
         doc.ocrError = errMsg;

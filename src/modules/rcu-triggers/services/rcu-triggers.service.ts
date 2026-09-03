@@ -487,11 +487,16 @@ export class RcuTriggersService {
    * OCR lookup: match document type by string (key/label), require usedInOcr + isActive,
    * then return triggers that are also usedInOcr + isActive.
    * If no document type matches, fall back to the "other" OCR document type.
+   * Extra hints (e.g. display label) improve matching against custom admin names.
    */
-  async findOcrTriggersForDocumentType(documentTypeHint: string): Promise<{
+  async findOcrTriggersForDocumentType(
+    documentTypeHint: string,
+    extraHints: string[] = [],
+  ): Promise<{
     matchedKey: string | null;
     matchedLabel: string | null;
     usedFallbackOther: boolean;
+    matchScore: number;
     triggers: Array<{
       code: string;
       text: string;
@@ -500,17 +505,37 @@ export class RcuTriggersService {
     }>;
   }> {
     const docs = await this.documentTypeRepo.find({
-      where: { isActive: true, usedInOcr: true },
+      where: { isActive: true },
       relations: ['triggers'],
       order: { sortOrder: 'ASC', label: 'ASC' },
     });
 
-    const hint = documentTypeHint?.trim() || '';
-    let matched = this.pickBestDocumentTypeMatch(docs, hint);
-    let usedFallbackOther = false;
+    // Prefer OCR-enabled document types; if none match, allow active non-OCR types as a last resort.
+    const ocrDocs = docs.filter((d) => d.usedInOcr);
+    const searchPools = ocrDocs.length ? [ocrDocs, docs] : [docs];
 
+    const hints = [documentTypeHint, ...extraHints]
+      .map((h) => (h ?? '').trim())
+      .filter(Boolean);
+
+    let matched: RcuDocumentType | null = null;
+    let matchScore = 0;
+    for (const pool of searchPools) {
+      for (const hint of hints) {
+        const result = this.pickBestDocumentTypeMatch(pool, hint);
+        if (result && result.score > matchScore) {
+          matched = result.doc;
+          matchScore = result.score;
+        }
+      }
+      if (matched && matchScore >= 70) break;
+    }
+
+    let usedFallbackOther = false;
     if (!matched) {
-      matched = this.pickBestDocumentTypeMatch(docs, 'other');
+      const fallback = this.pickBestDocumentTypeMatch(docs, 'other');
+      matched = fallback?.doc ?? null;
+      matchScore = fallback?.score ?? 0;
       usedFallbackOther = !!matched;
     }
 
@@ -528,6 +553,7 @@ export class RcuTriggersService {
       matchedKey: matched?.key ?? null,
       matchedLabel: matched?.label ?? null,
       usedFallbackOther,
+      matchScore,
       triggers,
     };
   }
@@ -608,12 +634,17 @@ export class RcuTriggersService {
   }
 
   private normalizeDocTypeText(value: string): string {
-    return value
+    let text = value
       .toLowerCase()
       .replace(/[_/]+/g, ' ')
       .replace(/-/g, ' ')
+      // Drop noisy suffixes admins often append in UI labels
+      .replace(/\b(ocr|verification|document|documents|type|card)\b/g, ' ')
+      // Common typo: "salary sleep" → "salary slip"
+      .replace(/\bsleep\b/g, 'slip')
       .replace(/\s+/g, ' ')
       .trim();
+    return text;
   }
 
   private compactDocTypeText(value: string): string {
@@ -629,16 +660,39 @@ export class RcuTriggersService {
       aadhaar: ['aadhaar', 'aadhar', 'aadhaarcard', 'aadharcard'],
       aadhar: ['aadhaar', 'aadhar', 'aadhaarcard', 'aadharcard'],
       aadhaarcard: ['aadhaar', 'aadhaarcard'],
-      salaryslip: ['salaryslip', 'salarycertificate'],
+      salaryslip: [
+        'salaryslip',
+        'salarycertificate',
+        'salarysleep',
+        'payslip',
+        'pay slip',
+        'joiningletter',
+      ],
+      salarysleep: ['salaryslip', 'salarysleep', 'payslip'],
+      payslip: ['salaryslip', 'payslip'],
       form16: ['form16'],
-      bankstatement: ['bankstatement', 'bankstmt', 'bankstmtmanual', 'bankstmtdigital', 'bankstmtcoded'],
-      accountstatement: ['bankstatement', 'bankstmt', 'bankstmtmanual', 'bankstmtdigital', 'bankstmtcoded'],
+      bankstatement: [
+        'bankstatement',
+        'bankstmt',
+        'bankstmtmanual',
+        'bankstmtdigital',
+        'bankstmtcoded',
+        'accountstatement',
+      ],
+      accountstatement: [
+        'bankstatement',
+        'bankstmt',
+        'bankstmtmanual',
+        'bankstmtdigital',
+        'bankstmtcoded',
+        'accountstatement',
+      ],
       other: ['other', 'others', 'otherdocs'],
       others: ['other', 'others', 'otherdocs'],
-      addressproof: ['other', 'others', 'otherdocs'],
-      ownershipdeed: ['other', 'others', 'otherdocs'],
-      agreement: ['rentagreement', 'other', 'others', 'otherdocs'],
-      agreementcopy: ['rentagreement', 'other', 'others', 'otherdocs'],
+      addressproof: ['addressproof', 'other', 'others', 'otherdocs'],
+      ownershipdeed: ['ownershipdeed', 'other', 'others', 'otherdocs'],
+      agreement: ['rentagreement', 'agreement', 'other', 'others', 'otherdocs'],
+      agreementcopy: ['rentagreement', 'agreement', 'other', 'others', 'otherdocs'],
     };
 
     const variants = new Set<string>([
@@ -649,7 +703,21 @@ export class RcuTriggersService {
       ...(aliases[compact] ?? []),
     ]);
 
+    // Also add token-stripped compact forms without spaces from aliases
+    for (const alias of aliases[compact] ?? []) {
+      variants.add(alias.replace(/\s+/g, ''));
+    }
+
     return [...variants].filter(Boolean);
+  }
+
+  private tokenSet(value: string): Set<string> {
+    return new Set(
+      this.normalizeDocTypeText(value)
+        .split(' ')
+        .map((t) => t.trim())
+        .filter((t) => t.length >= 2),
+    );
   }
 
   private scoreDocumentTypeMatch(
@@ -668,12 +736,33 @@ export class RcuTriggersService {
       if (!hc) continue;
       if (kn === hint || ln === hint || kc === hc || lc === hc) {
         best = Math.max(best, 100);
-      } else if (kc.startsWith(hc) || lc.startsWith(hc)) {
+      } else if (kc.startsWith(hc) || lc.startsWith(hc) || hc.startsWith(kc) || hc.startsWith(lc)) {
         best = Math.max(best, 85);
-      } else if (kc.includes(hc) || lc.includes(hc)) {
-        best = Math.max(best, 70);
+      } else if (kc.includes(hc) || lc.includes(hc) || hc.includes(kc) || hc.includes(lc)) {
+        // Prefer longer overlap
+        const overlap = Math.min(hc.length, Math.max(kc.length, lc.length));
+        best = Math.max(best, overlap >= 6 ? 80 : 70);
       } else if (hc.includes(kc) && kc.length >= 4) {
         best = Math.max(best, 60);
+      }
+    }
+
+    // Token overlap: "salary slip" vs "salary sleep ocr" → salary + slip (after sleep→slip)
+    for (const hint of hintVariants) {
+      const hintTokens = this.tokenSet(hint);
+      if (!hintTokens.size) continue;
+      for (const target of [key, label]) {
+        const targetTokens = this.tokenSet(target);
+        if (!targetTokens.size) continue;
+        let shared = 0;
+        for (const t of hintTokens) {
+          if (targetTokens.has(t)) shared++;
+        }
+        if (shared === 0) continue;
+        const ratio = shared / Math.max(hintTokens.size, targetTokens.size);
+        if (shared >= 2 || (shared === 1 && hintTokens.size === 1 && targetTokens.has([...hintTokens][0]))) {
+          best = Math.max(best, Math.round(55 + ratio * 40));
+        }
       }
     }
 
@@ -683,18 +772,18 @@ export class RcuTriggersService {
   private pickBestDocumentTypeMatch(
     docs: RcuDocumentType[],
     hint: string,
-  ): RcuDocumentType | null {
+  ): { doc: RcuDocumentType; score: number } | null {
     const variants = this.hintVariants(hint);
     let best: { doc: RcuDocumentType; score: number } | null = null;
 
     for (const doc of docs) {
       const score = this.scoreDocumentTypeMatch(variants, doc.key, doc.label);
-      if (score < 60) continue;
+      if (score < 55) continue;
       if (!best || score > best.score) {
         best = { doc, score };
       }
     }
 
-    return best?.doc ?? null;
+    return best;
   }
 }
