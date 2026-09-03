@@ -152,6 +152,21 @@ export class FieldAssistant {
   @Column({ name: 'document_uploads', type: 'json', nullable: true })
   documentUploads: Record<string, any> | null;
 
+  /** Insurance details managed by super admin from agent view page */
+  @Column({ name: 'insurance_details', type: 'json', nullable: true })
+  insuranceDetails: {
+    providerCompany?: string | null;
+    policyNumber?: string | null;
+    insuranceType?: string | null;
+    coverageAmount?: string | null;
+    premiumAmount?: string | null;
+    startDate?: string | null;
+    endDate?: string | null;
+    nomineeName?: string | null;
+    nomineeRelation?: string | null;
+    notes?: string | null;
+  } | null;
+
   // ===== System fields =====
   @Column({ name: 'field_agent_id', type: 'varchar', length: 50, nullable: true })
   @Index({ unique: true })

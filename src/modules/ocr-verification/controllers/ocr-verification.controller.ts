@@ -13,8 +13,9 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { join } from 'path';
 import { createReadStream, existsSync, statSync } from 'fs';
@@ -30,6 +31,7 @@ type AuthedReq = { user: { role: Role; clientId?: string } };
 type UploadedFileLike = { buffer: Buffer; mimetype?: string; originalname?: string };
 
 const MAX_SIZE = 10 * 1024 * 1024;
+const MAX_FILES = 20;
 const ALLOWED_DOC_MIMES = [
   'application/pdf',
   'image/jpeg',
@@ -42,6 +44,22 @@ const ALLOWED_MERGED_MIMES = [
   'application/zip',
   'application/x-zip-compressed',
 ];
+
+const docFileFilter = (
+  _req: any,
+  file: { mimetype: string },
+  cb: (error: Error | null, acceptFile: boolean) => void,
+) => {
+  if (!file.mimetype || !ALLOWED_DOC_MIMES.includes(file.mimetype)) {
+    return cb(
+      new BadRequestException(
+        'Invalid file type. Use PDF, JPG, JPEG, PNG, or WEBP for OCR documents.',
+      ),
+      false,
+    );
+  }
+  cb(null, true);
+};
 
 @Controller('ocr-verifications')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -100,39 +118,55 @@ export class OcrVerificationController {
     return this.service.update(id, dto, req.user);
   }
 
+  /** Append one or many documents (FormData field: files). */
   @Post(':id/documents/upload')
+  @UseInterceptors(
+    FilesInterceptor('files', MAX_FILES, {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_SIZE },
+      fileFilter: docFileFilter,
+    }),
+  )
+  uploadDocuments(
+    @Param('id') id: string,
+    @UploadedFiles() files: UploadedFileLike[] | undefined,
+    @Request() req: AuthedReq,
+  ) {
+    return this.service.appendDocuments(id, files ?? [], req.user);
+  }
+
+  /** Legacy single-file upload (FormData field: file, optional key/isExtra). */
+  @Post(':id/documents/upload-one')
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
       limits: { fileSize: MAX_SIZE },
-      fileFilter: (_req, file, cb) => {
-        if (!file.mimetype || !ALLOWED_DOC_MIMES.includes(file.mimetype)) {
-          return cb(
-            new BadRequestException(
-              'Invalid file type. Use PDF, JPG, JPEG, PNG, or WEBP for OCR documents.',
-            ),
-            false,
-          );
-        }
-        cb(null, true);
-      },
+      fileFilter: docFileFilter,
     }),
   )
-  uploadDocument(
+  uploadDocumentOne(
     @Param('id') id: string,
     @UploadedFile() file: UploadedFileLike | undefined,
     @Body('key') key: string | undefined,
     @Body('isExtra') isExtra: string | undefined,
     @Request() req: AuthedReq,
   ) {
-    if (!key?.trim()) throw new BadRequestException('key is required');
     return this.service.uploadDocument(
       id,
-      key.trim(),
+      key?.trim(),
       isExtra === 'true' || isExtra === '1',
       file,
       req.user,
     );
+  }
+
+  @Delete(':id/documents/:key')
+  deleteDocument(
+    @Param('id') id: string,
+    @Param('key') key: string,
+    @Request() req: AuthedReq,
+  ) {
+    return this.service.deleteDocument(id, key, req.user);
   }
 
   @Post(':id/merged/upload')

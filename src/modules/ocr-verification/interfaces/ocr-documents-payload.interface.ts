@@ -22,6 +22,33 @@ export interface OcrCheck {
   details?: string;
 }
 
+export interface OcrForensicSignal {
+  code: string;
+  threatCode: string;
+  severity: 'low' | 'medium' | 'high';
+  score: number;
+  status: 'passed' | 'failed' | 'info';
+  title: string;
+  description: string;
+  evidence?: Record<string, unknown>;
+}
+
+export type OcrForensicVerdict =
+  | 'GENUINE'
+  | 'LIKELY_GENUINE'
+  | 'SUSPICIOUS'
+  | 'TEMP'
+  | 'MANUAL_REVIEW';
+
+export interface OcrForensicSummary {
+  riskScore: number;
+  verdict: OcrForensicVerdict;
+  verdictLabel: string;
+  reasons: string[];
+  failedSignalCount: number;
+  failedTriggerCount: number;
+}
+
 export interface OcrDocumentEntry {
   key: string;
   label: string;
@@ -39,6 +66,12 @@ export interface OcrDocumentEntry {
   ocrSuccess: boolean;
   ocrError: string | null;
   uploadedAt: string | null;
+  /** Phase-1 forensics */
+  fileHash?: string | null;
+  fileSizeBytes?: number | null;
+  pdfMetadata?: Record<string, unknown> | null;
+  forensicSignals?: OcrForensicSignal[] | null;
+  forensicSummary?: OcrForensicSummary | null;
 }
 
 export interface OcrMergedFileEntry {
@@ -47,8 +80,18 @@ export interface OcrMergedFileEntry {
   uploadedAt: string;
 }
 
+export interface OcrCaseForensicSummary {
+  riskScore: number;
+  verdict: OcrForensicVerdict;
+  verdictLabel: string;
+  reasons: string[];
+  documentCount: number;
+  worstDocumentKey: string | null;
+}
+
 export interface OcrDocumentsPayload {
   documents: OcrDocumentEntry[];
   extraDocuments: OcrDocumentEntry[];
   mergedFile: OcrMergedFileEntry | null;
+  caseForensicSummary?: OcrCaseForensicSummary | null;
 }

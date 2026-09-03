@@ -17,6 +17,7 @@ import { Role } from '../../../common/enums/role.enum';
 import { FieldAssistanceService } from '../services/field-assistance.service';
 import { ListFieldAssistantsQueryDto } from '../dto/list-field-assistants-query.dto';
 import { UpsertFieldAssistantDto } from '../dto/field-assistant.dto';
+import { UpdateFieldAssistantInsuranceDto } from '../dto/update-field-assistant-insurance.dto';
 
 @Controller('field-assistants')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -67,6 +68,16 @@ export class FieldAssistanceController {
     @Request() req: any,
   ) {
     return this.service.update(id, dto, req.user?.sub);
+  }
+
+  /** Save insurance details from agent view page */
+  @Patch(':id/insurance')
+  updateInsurance(
+    @Param('id') id: string,
+    @Body() dto: UpdateFieldAssistantInsuranceDto,
+    @Request() req: any,
+  ) {
+    return this.service.updateInsurance(id, dto, req.user?.sub);
   }
 
   /** Delete Field Assistant */
