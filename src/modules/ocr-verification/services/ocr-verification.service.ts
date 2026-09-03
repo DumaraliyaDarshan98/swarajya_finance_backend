@@ -731,6 +731,9 @@ export class OcrVerificationService {
       try {
         const filePath = join(OCR_UPLOAD_DIR, doc.storedFileName!);
         if (!existsSync(filePath)) {
+          this.logger.error(
+            `[OCR:PIPELINE] IDENTIFY skip — file missing on disk record=${recordId} key=${doc.key} stored=${doc.storedFileName}`,
+          );
           doc.documentType = 'other';
           doc.label = doc.fileName || 'Other Document';
           continue;
@@ -742,6 +745,10 @@ export class OcrVerificationService {
           this.inferMimeType(doc.fileName) ||
           this.inferMimeType(doc.storedFileName);
 
+        this.logger.log(
+          `[OCR:PIPELINE] IDENTIFY record=${recordId} file="${doc.fileName}" mime=${resolvedMimeType ?? 'unknown'} size=${fileBuffer.length}`,
+        );
+
         const identifyRes = await this.ocrService.identifyDocument({
           buffer: fileBuffer,
           mimetype: resolvedMimeType || undefined,
@@ -752,9 +759,13 @@ export class OcrVerificationService {
         );
         doc.documentType = mapped.documentType;
         doc.label = mapped.label;
+        this.logger.log(
+          `[OCR:PIPELINE] IDENTIFY OK record=${recordId} file="${doc.fileName}" → type="${mapped.documentType}" label="${mapped.label}"`,
+        );
       } catch (err: any) {
-        this.logger.warn(
-          `Identify failed for "${doc.fileName}" (${doc.key}): ${err?.message ?? err}`,
+        this.logger.error(
+          `[OCR:PIPELINE] IDENTIFY FAIL record=${recordId} file="${doc.fileName}" key=${doc.key} error="${err?.message ?? err}"`,
+          err?.stack,
         );
         doc.documentType = 'other';
         doc.label = doc.fileName || 'Other Document';
@@ -894,7 +905,11 @@ export class OcrVerificationService {
         }
         if (picked.forensicSummary) {
           this.logger.log(
-            `Forensics for "${doc.label}": verdict=${picked.forensicSummary.verdict} score=${picked.forensicSummary.riskScore}`,
+            `[OCR:PIPELINE] VERIFY+FORENSICS OK record=${recordId} file="${doc.fileName}" type="${doc.documentType}" verdict=${picked.forensicSummary.verdict} score=${picked.forensicSummary.riskScore}`,
+          );
+        } else {
+          this.logger.log(
+            `[OCR:PIPELINE] VERIFY OK record=${recordId} file="${doc.fileName}" type="${doc.documentType}" (no forensic summary)`,
           );
         }
       } catch (err: any) {
@@ -902,7 +917,10 @@ export class OcrVerificationService {
         doc.ocrError = errMsg;
         doc.ocrSuccess = false;
         hasFailure = true;
-        this.logger.warn(`OCR failed for "${doc.label}" (${doc.key}): ${errMsg}`);
+        this.logger.error(
+          `[OCR:PIPELINE] VERIFY FAIL record=${recordId} file="${doc.fileName}" key=${doc.key} type="${doc.documentType}" error="${errMsg}"`,
+          err?.stack,
+        );
       }
 
       record.documentsPayload = payload;
