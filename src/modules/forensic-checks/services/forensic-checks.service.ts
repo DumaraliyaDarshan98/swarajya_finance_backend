@@ -106,7 +106,10 @@ export class ForensicChecksService {
   /**
    * OCR runtime configs for a detected file category.
    * Returns `null` when catalog is empty (OCR uses hardcoded defaults).
-   * Returns `[]` when catalog exists but no active OCR checks for that category.
+   * Returns `[]` when catalog exists but no Active + Used-in-OCR checks for that category.
+   *
+   * Only rows with isActive=true AND usedInOcr=true are included — inactive or
+   * OCR-disabled checks must not appear on the verification report.
    */
   async getOcrForensicConfigs(
     fileCategory?: ForensicCategory | null,
@@ -114,17 +117,18 @@ export class ForensicChecksService {
     const total = await this.repo.count();
     if (total === 0) return null;
 
-    const where: {
-      isActive: boolean;
-      usedInOcr: boolean;
-      category?: ForensicCategory;
-    } = { isActive: true, usedInOcr: true };
-    if (fileCategory) where.category = fileCategory;
+    const qb = this.repo
+      .createQueryBuilder('fc')
+      .where('fc.is_active = :active', { active: true })
+      .andWhere('fc.used_in_ocr = :ocr', { ocr: true })
+      .orderBy('fc.sort_order', 'ASC')
+      .addOrderBy('fc.code', 'ASC');
 
-    const rows = await this.repo.find({
-      where,
-      order: { sortOrder: 'ASC', code: 'ASC' },
-    });
+    if (fileCategory) {
+      qb.andWhere('fc.category = :category', { category: fileCategory });
+    }
+
+    const rows = await qb.getMany();
 
     return rows.map((r) => ({
       code: r.code,

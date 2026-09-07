@@ -563,6 +563,30 @@ export class RcuTriggersService {
       if (matched && matchScore >= 70) break;
     }
 
+    // Never stick with a matched type that has zero Active+OCR triggers when
+    // another eligible type in the same family has OCR triggers (e.g. Bank Manual).
+    if (matched) {
+      const matchedOcrCount = (matched.triggers ?? []).filter(
+        (t) => t.isActive && t.usedInOcr,
+      ).length;
+      if (matchedOcrCount === 0) {
+        const ocrCapable = (ocrDocs.length ? ocrDocs : docs).filter((d) =>
+          (d.triggers ?? []).some((t) => t.isActive && t.usedInOcr),
+        );
+        let rescue: { doc: RcuDocumentType; score: number } | null = null;
+        for (const hint of hints) {
+          const result = this.pickBestDocumentTypeMatch(ocrCapable, hint);
+          if (result && (!rescue || result.score > rescue.score)) {
+            rescue = result;
+          }
+        }
+        if (rescue) {
+          matched = rescue.doc;
+          matchScore = rescue.score;
+        }
+      }
+    }
+
     let usedFallbackOther = false;
     if (!matched) {
       const fallback = this.pickBestDocumentTypeMatch(docs, 'other');
@@ -703,21 +727,30 @@ export class RcuTriggersService {
       salarysleep: ['salaryslip', 'salarysleep', 'payslip'],
       payslip: ['salaryslip', 'payslip'],
       form16: ['form16'],
-      bankstatement: [
-        'bankstatement',
-        'bankstmt',
+      // Keep generic bank aliases NON-variant-specific so Manual/Digital/Coded
+      // do not all score 100 and accidentally pick a type with 0 OCR triggers.
+      bankstatement: ['bankstatement', 'bankstmt', 'accountstatement'],
+      accountstatement: ['bankstatement', 'bankstmt', 'accountstatement'],
+      bankstmt: ['bankstatement', 'bankstmt', 'accountstatement'],
+      bankstmtmanual: [
         'bankstmtmanual',
-        'bankstmtdigital',
-        'bankstmtcoded',
-        'accountstatement',
+        'bankstatementsmanual',
+        'bankstatementmanual',
+        'manualbankstatement',
+        'passbook',
       ],
-      accountstatement: [
-        'bankstatement',
-        'bankstmt',
-        'bankstmtmanual',
+      bankstmtdigital: [
         'bankstmtdigital',
+        'bankstatementsdigital',
+        'bankstatementdigital',
+        'digitalbankstatement',
+        'estatement',
+      ],
+      bankstmtcoded: [
         'bankstmtcoded',
-        'accountstatement',
+        'bankstatementscoded',
+        'bankstatementcoded',
+        'codedbankstatement',
       ],
       other: ['other', 'others', 'otherdocs'],
       others: ['other', 'others', 'otherdocs'],
@@ -806,16 +839,100 @@ export class RcuTriggersService {
     hint: string,
   ): { doc: RcuDocumentType; score: number } | null {
     const variants = this.hintVariants(hint);
+    const hintNorm = this.normalizeDocTypeText(hint);
     let best: { doc: RcuDocumentType; score: number } | null = null;
 
     for (const doc of docs) {
-      const score = this.scoreDocumentTypeMatch(variants, doc.key, doc.label);
+      let score = this.scoreDocumentTypeMatch(variants, doc.key, doc.label);
       if (score < 55) continue;
+
+      // Bank statement family: boost the right Manual / Digital / Coded variant.
+      score = this.applyBankStatementVariantBoost(hintNorm, doc, score);
+
+      const ocrTriggerCount = (doc.triggers ?? []).filter(
+        (t) => t.isActive && t.usedInOcr,
+      ).length;
+
       if (!best || score > best.score) {
         best = { doc, score };
+        continue;
+      }
+
+      if (score === best.score) {
+        const bestOcrCount = (best.doc.triggers ?? []).filter(
+          (t) => t.isActive && t.usedInOcr,
+        ).length;
+        // Prefer the document type that actually has OCR-enabled triggers.
+        if (ocrTriggerCount > bestOcrCount) {
+          best = { doc, score };
+          continue;
+        }
+        // Ambiguous generic bank → prefer Manual (passbook / handwriting RCU set).
+        if (
+          this.isGenericBankHint(hintNorm) &&
+          this.isBankManualDoc(doc) &&
+          !this.isBankManualDoc(best.doc) &&
+          ocrTriggerCount > 0
+        ) {
+          best = { doc, score };
+        }
       }
     }
 
     return best;
+  }
+
+  private isGenericBankHint(hintNorm: string): boolean {
+    if (!/\bbank\b|bankstmt|bankstatement|account\s*statement|passbook/.test(hintNorm)) {
+      return false;
+    }
+    return !/\b(manual|digital|coded|passbook|handwrit|e[\s-]?statement)\b/.test(
+      hintNorm.replace(/\bbank\s+statement\b/g, 'bankstatement'),
+    );
+  }
+
+  private isBankManualDoc(doc: RcuDocumentType): boolean {
+    const t = this.normalizeDocTypeText(`${doc.key} ${doc.label}`);
+    return /\bmanual\b|passbook|handwrit/.test(t);
+  }
+
+  private isBankDigitalDoc(doc: RcuDocumentType): boolean {
+    const t = this.normalizeDocTypeText(`${doc.key} ${doc.label}`);
+    return /\bdigital\b|e[\s-]?statement|computer/.test(t);
+  }
+
+  private isBankCodedDoc(doc: RcuDocumentType): boolean {
+    const t = this.normalizeDocTypeText(`${doc.key} ${doc.label}`);
+    return /\bcoded\b/.test(t);
+  }
+
+  private applyBankStatementVariantBoost(
+    hintNorm: string,
+    doc: RcuDocumentType,
+    score: number,
+  ): number {
+    const isBankFamily =
+      /\bbank\b|bankstmt|bankstatement|account\s*statement|passbook/.test(hintNorm) ||
+      /\bbank\b|bankstmt|passbook/.test(
+        this.normalizeDocTypeText(`${doc.key} ${doc.label}`),
+      );
+    if (!isBankFamily || score < 55) return score;
+
+    const wantsManual = /\bmanual\b|passbook|handwrit|whitener|overwrit/.test(hintNorm);
+    const wantsDigital = /\bdigital\b|e[\s-]?statement|computerized|computerised/.test(
+      hintNorm,
+    );
+    const wantsCoded = /\bcoded\b/.test(hintNorm);
+
+    if (wantsManual && this.isBankManualDoc(doc)) return Math.max(score, 100);
+    if (wantsDigital && this.isBankDigitalDoc(doc)) return Math.max(score, 100);
+    if (wantsCoded && this.isBankCodedDoc(doc)) return Math.max(score, 100);
+
+    // Generic "bank statement" → Manual is the default RCU pack when it has OCR triggers.
+    if (!wantsManual && !wantsDigital && !wantsCoded && this.isBankManualDoc(doc)) {
+      return Math.max(score, score + 8);
+    }
+
+    return score;
   }
 }

@@ -132,6 +132,40 @@ export class OcrVerificationService {
     return { documentType: text.toLowerCase(), label: text };
   }
 
+  /**
+   * RCU keys like `bank_stmt_manual` must not be sent to OCR as-is —
+   * extraction prompts match on canonical types ("bank statement", "salary slip", …).
+   */
+  private resolveOcrExtractionDocumentType(
+    matchedKey: string | null | undefined,
+    identifiedType: string,
+    matchedLabel?: string | null,
+  ): string {
+    const blob = `${matchedKey ?? ''} ${matchedLabel ?? ''} ${identifiedType ?? ''}`.toLowerCase();
+
+    if (/aadhaar|aadhar/.test(blob)) return 'aadhaar';
+    if (/\bpan\b|pancard|pan card/.test(blob)) return 'pan';
+    if (/voter/.test(blob)) return 'voter card';
+    if (/driving|license|licence/.test(blob)) return 'driving license';
+    if (/passport/.test(blob)) return 'passport';
+    if (/salary|payslip|pay\s*slip/.test(blob)) return 'salary slip';
+    if (/form\s*16|form16/.test(blob)) return 'form 16';
+    if (/bank|passbook|account\s*stmt|account\s*statement/.test(blob)) {
+      return 'bank statement';
+    }
+    if (/\bitr\b|income\s*tax/.test(blob)) return 'itr';
+    if (/\bgst\b/.test(blob)) return 'gst';
+    if (/trade\s*license/.test(blob)) return 'trade license';
+
+    const identified = (identifiedType || '').trim().toLowerCase();
+    if (identified && identified !== 'other') return identified;
+
+    if (matchedKey && matchedKey !== 'other') {
+      return matchedKey.replace(/[_-]+/g, ' ').trim().toLowerCase();
+    }
+    return identified || 'other';
+  }
+
   private unlinkStoredFile(storedFileName: string | null | undefined): void {
     if (!storedFileName?.trim()) return;
     const filePath = join(OCR_UPLOAD_DIR, storedFileName);
@@ -185,7 +219,12 @@ export class OcrVerificationService {
     forensicSummary: OcrForensicSummary | null;
   } {
     const data =
-      ocrResponse && typeof ocrResponse === 'object' && 'data' in ocrResponse
+      ocrResponse &&
+      typeof ocrResponse === 'object' &&
+      'data' in ocrResponse &&
+      !('extractedData' in ocrResponse) &&
+      !('triggerResults' in ocrResponse) &&
+      !('forensicSummary' in ocrResponse)
         ? (ocrResponse.data as Record<string, unknown>)
         : ocrResponse;
 
@@ -872,11 +911,17 @@ export class OcrVerificationService {
           continue;
         }
 
-        // Prefer RCU matched key as documentType for extraction prompts when available
-        const ocrDocumentType =
-          !bundle.matchedKey || bundle.matchedKey === 'other'
-            ? doc.documentType
-            : bundle.matchedKey.replace(/[_-]+/g, ' ');
+        // Map RCU keys (e.g. bank_stmt_manual) to canonical extraction types
+        // so Gemini uses the right prompt (bank statement / salary slip / …).
+        const ocrDocumentType = this.resolveOcrExtractionDocumentType(
+          bundle.matchedKey,
+          doc.documentType,
+          bundle.matchedLabel,
+        );
+
+        this.logger.log(
+          `[OCR:PIPELINE] extraction type="${ocrDocumentType}" rcuKey=${bundle.matchedKey ?? 'none'} triggers=${triggerCount} file="${doc.fileName}"`,
+        );
 
         const fileCategory = detectForensicFileCategory(
           doc.fileName ?? doc.storedFileName,

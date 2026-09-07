@@ -100,6 +100,39 @@
       "sortOrder": 90
     },
     {
+      "code": "PDF_INCREMENTAL_UPDATE",
+      "engineKey": "PDF_INCREMENTAL_UPDATE",
+      "threatCode": "T006",
+      "category": "PDF",
+      "title": "PDF incremental update / re-save",
+      "description": "Multiple %%EOF or /Prev xref — PDF was edited or annotated after creation.",
+      "severity": "high",
+      "score": 26,
+      "sortOrder": 55
+    },
+    {
+      "code": "PDF_ANNOTATIONS_PRESENT",
+      "engineKey": "PDF_ANNOTATIONS_PRESENT",
+      "threatCode": "T007",
+      "category": "PDF",
+      "title": "PDF annotations / marks detected",
+      "description": "Ink, highlight, free-text, stamp, or redact annotations overlay the page.",
+      "severity": "high",
+      "score": 34,
+      "sortOrder": 56
+    },
+    {
+      "code": "PDF_VISUAL_TAMPER_DETECTED",
+      "engineKey": "VISUAL_TAMPER_DETECTED",
+      "threatCode": "T050",
+      "category": "PDF",
+      "title": "Visual tampering detected",
+      "description": "Model saw marks, whiteout, erased/overwritten text, or similar edits on the PDF.",
+      "severity": "high",
+      "score": 40,
+      "sortOrder": 58
+    },
+    {
       "code": "PDF_SALARY_EARNINGS_MISMATCH",
       "engineKey": "SALARY_EARNINGS_MISMATCH",
       "threatCode": "T043",
@@ -252,6 +285,50 @@
       "sortOrder": 50
     },
     {
+      "code": "IMAGE_ELA_ANOMALY",
+      "engineKey": "IMAGE_ELA_ANOMALY",
+      "threatCode": "T051",
+      "category": "IMAGE",
+      "title": "Image edit residual anomaly (ELA)",
+      "description": "Error-level analysis found uneven residuals typical of local edits, marks, or pasted regions.",
+      "severity": "high",
+      "score": 32,
+      "sortOrder": 60
+    },
+    {
+      "code": "IMAGE_EDITOR_SIGNATURE",
+      "engineKey": "IMAGE_EDITOR_SIGNATURE",
+      "threatCode": "T053",
+      "category": "IMAGE",
+      "title": "Image contains editor signatures",
+      "description": "Binary/metadata fingerprints of Photoshop, Paint, GIMP, Canva, etc.",
+      "severity": "high",
+      "score": 30,
+      "sortOrder": 62
+    },
+    {
+      "code": "IMAGE_EDITOR_METADATA",
+      "engineKey": "IMAGE_EDITOR_METADATA",
+      "threatCode": "T052",
+      "category": "IMAGE",
+      "title": "Image editor metadata found",
+      "description": "EXIF/XMP references editing software.",
+      "severity": "high",
+      "score": 28,
+      "sortOrder": 64
+    },
+    {
+      "code": "IMAGE_VISUAL_TAMPER_DETECTED",
+      "engineKey": "VISUAL_TAMPER_DETECTED",
+      "threatCode": "T050",
+      "category": "IMAGE",
+      "title": "Visual tampering detected",
+      "description": "Model saw marks, whiteout, erased/overwritten text, or similar edits on the image.",
+      "severity": "high",
+      "score": 40,
+      "sortOrder": 66
+    },
+    {
       "code": "IMAGE_SALARY_EARNINGS_MISMATCH",
       "engineKey": "SALARY_EARNINGS_MISMATCH",
       "threatCode": "T043",
@@ -344,6 +421,39 @@
       "score": 0,
       "sortOrder": 40
     },
+    {
+      "code": "DOC_MODIFIED_AFTER_CREATE",
+      "engineKey": "DOC_MODIFIED_AFTER_CREATE",
+      "threatCode": "T025",
+      "category": "DOC",
+      "title": "Office document modified after creation",
+      "description": "core.xml Modified is later than Created — document was re-saved / edited.",
+      "severity": "high",
+      "score": 24,
+      "sortOrder": 50
+    },
+    {
+      "code": "DOC_TRACKED_CHANGES",
+      "engineKey": "DOC_TRACKED_CHANGES",
+      "threatCode": "T028",
+      "category": "DOC",
+      "title": "Tracked changes / comments present",
+      "description": "Office package contains deletions, insertions, or comments markup.",
+      "severity": "high",
+      "score": 30,
+      "sortOrder": 52
+    },
+    {
+      "code": "DOC_VISUAL_TAMPER_DETECTED",
+      "engineKey": "VISUAL_TAMPER_DETECTED",
+      "threatCode": "T050",
+      "category": "DOC",
+      "title": "Visual tampering detected",
+      "description": "Model saw marks, whiteout, erased/overwritten text, or similar edits.",
+      "severity": "high",
+      "score": 40,
+      "sortOrder": 54
+    },
 
     {
       "code": "ZIP_FILE_FORMAT_MISMATCH",
@@ -399,6 +509,28 @@
       "severity": "low",
       "score": 0,
       "sortOrder": 50
+    },
+    {
+      "code": "ZIP_SUSPICIOUS_ENTRIES",
+      "engineKey": "ZIP_SUSPICIOUS_ENTRIES",
+      "threatCode": "T035",
+      "category": "ZIP",
+      "title": "Suspicious files inside archive",
+      "description": "Archive contains executable/script or double-extension payloads.",
+      "severity": "high",
+      "score": 28,
+      "sortOrder": 60
+    },
+    {
+      "code": "ZIP_VISUAL_TAMPER_DETECTED",
+      "engineKey": "VISUAL_TAMPER_DETECTED",
+      "threatCode": "T050",
+      "category": "ZIP",
+      "title": "Visual tampering detected",
+      "description": "Model saw marks, whiteout, erased/overwritten text on nested document content when extractable.",
+      "severity": "high",
+      "score": 40,
+      "sortOrder": 70
     }
   ]
 }
