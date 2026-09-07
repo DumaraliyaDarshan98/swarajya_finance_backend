@@ -29,6 +29,7 @@ import { GeoModule } from './modules/geo/geo.module';
 import { TrainingModule } from './modules/training/training.module';
 import { SubscriptionPlanModule } from './modules/subscription-plan/subscription-plan.module';
 import { RcuTriggersModule } from './modules/rcu-triggers/rcu-triggers.module';
+import { ForensicChecksModule } from './modules/forensic-checks/forensic-checks.module';
 import { PortalListModule } from './modules/portal-list/portal-list.module';
 import { QueuesModule } from './queues/queues.module';
 
@@ -77,6 +78,7 @@ import { QueuesModule } from './queues/queues.module';
     TrainingModule,
     SubscriptionPlanModule,
     RcuTriggersModule,
+    ForensicChecksModule,
     PortalListModule,
   ],
   controllers: [AppController],

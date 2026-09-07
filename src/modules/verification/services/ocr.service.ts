@@ -14,6 +14,17 @@ export type OcrRcuTriggerPayload = {
   risk: string;
   section?: string | null;
 };
+export type OcrForensicConfigPayload = {
+  code: string;
+  engineKey?: string;
+  threatCode: string;
+  title: string;
+  description: string;
+  severity: string;
+  score: number;
+  category?: string;
+  documentTypePattern?: string | null;
+};
 type UploadedFileLike = {
   buffer: Buffer;
   mimetype?: string;
@@ -125,6 +136,8 @@ export class OcrService {
     file: UploadedFileLike | undefined,
     documentType: string | undefined,
     rcuTriggers?: OcrRcuTriggerPayload[],
+    forensicConfigs?: OcrForensicConfigPayload[] | null,
+    fileCategory?: string | null,
   ): Promise<APIResponseInterface<OcrExtractResponse>> {
     if (!file) throw new BadRequestException('file is required');
     if (!documentType?.trim())
@@ -134,9 +147,11 @@ export class OcrService {
     const mime = file.mimetype || 'application/octet-stream';
     const size = file.buffer?.length ?? 0;
     const triggerCount = rcuTriggers?.length ?? 0;
+    const forensicCount =
+      forensicConfigs == null ? 'defaults' : String(forensicConfigs.length);
 
     this.logger.log(
-      `[OCR:VERIFY] start file="${filename}" mime=${mime} size=${size} documentType="${documentType}" triggers=${triggerCount} endpoint=${this.verifyEndpoint}`,
+      `[OCR:VERIFY] start file="${filename}" mime=${mime} size=${size} documentType="${documentType}" fileCategory=${fileCategory ?? 'auto'} triggers=${triggerCount} forensics=${forensicCount} endpoint=${this.verifyEndpoint}`,
     );
 
     const form = new FormData();
@@ -145,6 +160,12 @@ export class OcrService {
     form.append('documentType', documentType.trim());
     form.append('useRcuTriggers', 'true');
     form.append('triggers', JSON.stringify(rcuTriggers ?? []));
+    if (fileCategory) {
+      form.append('fileCategory', fileCategory);
+    }
+    if (forensicConfigs != null) {
+      form.append('forensicConfigs', JSON.stringify(forensicConfigs));
+    }
 
     let res: Response;
     try {

@@ -9,7 +9,7 @@ export type OcrVerificationStatus =
 export interface OcrTriggerResult {
   field: string;
   triggerType: string;
-  status: 'passed' | 'failed';
+  status: 'passed' | 'failed' | 'skipped';
   message: string;
   text?: string;
 }
@@ -27,7 +27,7 @@ export interface OcrForensicSignal {
   threatCode: string;
   severity: 'low' | 'medium' | 'high';
   score: number;
-  status: 'passed' | 'failed' | 'info';
+  status: 'passed' | 'failed' | 'info' | 'skipped';
   title: string;
   description: string;
   evidence?: Record<string, unknown>;

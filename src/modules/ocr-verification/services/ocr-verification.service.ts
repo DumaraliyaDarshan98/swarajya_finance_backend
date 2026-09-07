@@ -18,6 +18,8 @@ import { APIResponseInterface } from '../../../common/interfaces/response.interf
 import { OcrService } from '../../verification/services/ocr.service';
 import { OcrNotificationGateway } from '../gateways/ocr-notification.gateway';
 import { RcuTriggersService } from '../../rcu-triggers/services/rcu-triggers.service';
+import { ForensicChecksService } from '../../forensic-checks/services/forensic-checks.service';
+import { detectForensicFileCategory } from '../../forensic-checks/utils/detect-forensic-file-category';
 import { Role } from '../../../common/enums/role.enum';
 import type {
   OcrCaseForensicSummary,
@@ -70,6 +72,7 @@ export class OcrVerificationService {
     private ocrService: OcrService,
     private ocrGateway: OcrNotificationGateway,
     private rcuTriggersService: RcuTriggersService,
+    private forensicChecksService: ForensicChecksService,
   ) {}
 
   private ensureUploadDir(): void {
@@ -875,6 +878,17 @@ export class OcrVerificationService {
             ? doc.documentType
             : bundle.matchedKey.replace(/[_-]+/g, ' ');
 
+        const fileCategory = detectForensicFileCategory(
+          doc.fileName ?? doc.storedFileName,
+          resolvedMimeType,
+        );
+        const forensicConfigs =
+          await this.forensicChecksService.getOcrForensicConfigs(fileCategory);
+
+        this.logger.log(
+          `[OCR:PIPELINE] Forensics fileCategory=${fileCategory ?? 'unknown'} configs=${forensicConfigs == null ? 'defaults' : forensicConfigs.length} file="${doc.fileName}"`,
+        );
+
         const ocrRes = await this.ocrService.extractSimple(
           {
             buffer: fileBuffer,
@@ -883,6 +897,8 @@ export class OcrVerificationService {
           },
           ocrDocumentType,
           bundle.triggers,
+          forensicConfigs,
+          fileCategory,
         );
         const picked = this.pickOcrPayload((ocrRes.data ?? {}) as Record<string, unknown>);
         doc.extractedData = picked.extractedData;

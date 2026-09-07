@@ -254,14 +254,46 @@ export class RcuTriggersService {
     };
   }
 
-  async removeCategory(id: string): Promise<APIResponseInterface<null>> {
-    const row = await this.categoryRepo.findOne({ where: { id } });
+  async removeCategory(id: string): Promise<APIResponseInterface<{
+    id: string;
+    deletedDocumentTypes: number;
+    deletedTriggers: number;
+  }>> {
+    const row = await this.categoryRepo.findOne({
+      where: { id },
+      relations: ['documentTypes', 'documentTypes.triggers'],
+    });
     if (!row) throw new NotFoundException('Category not found');
-    await this.categoryRepo.remove(row);
+
+    const docs = row.documentTypes ?? [];
+    const docIds = docs.map((d) => d.id);
+    let deletedTriggers = 0;
+
+    if (docIds.length) {
+      // Count triggers before delete for response clarity
+      deletedTriggers = docs.reduce(
+        (sum, d) => sum + (d.triggers?.length ?? 0),
+        0,
+      );
+      // Explicit cascade: triggers → document types → category
+      await this.triggerRepo
+        .createQueryBuilder()
+        .delete()
+        .where('document_type_id IN (:...ids)', { ids: docIds })
+        .execute();
+      await this.documentTypeRepo.delete({ categoryId: id });
+    }
+
+    await this.categoryRepo.delete(id);
+
     return {
       code: HttpStatus.OK,
-      message: 'Category deleted successfully',
-      data: null,
+      message: `Category deleted with ${docs.length} document type(s) and ${deletedTriggers} trigger(s)`,
+      data: {
+        id,
+        deletedDocumentTypes: docs.length,
+        deletedTriggers,
+      },
     };
   }
 

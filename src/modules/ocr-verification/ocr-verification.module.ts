@@ -7,6 +7,7 @@ import { OcrVerificationService } from './services/ocr-verification.service';
 import { OcrNotificationGateway } from './gateways/ocr-notification.gateway';
 import { VerificationModule } from '../verification/verification.module';
 import { RcuTriggersModule } from '../rcu-triggers/rcu-triggers.module';
+import { ForensicChecksModule } from '../forensic-checks/forensic-checks.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { RcuTriggersModule } from '../rcu-triggers/rcu-triggers.module';
     MulterModule.register({ limits: { fileSize: 10 * 1024 * 1024 } }),
     VerificationModule,
     RcuTriggersModule,
+    ForensicChecksModule,
   ],
   controllers: [OcrVerificationController],
   providers: [OcrVerificationService, OcrNotificationGateway],
