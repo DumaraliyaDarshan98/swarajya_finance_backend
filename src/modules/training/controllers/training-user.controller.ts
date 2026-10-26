@@ -19,13 +19,13 @@ export class TrainingUserController {
   }
 
   @Get('me/assigned')
-  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   getAssigned(@Req() req: { user: AuthedUser }) {
     return this.trainingService.getAssignedTraining(req.user.sub, req.user.role);
   }
 
   @Post('me/complete')
-  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   complete(
     @Req() req: { user: AuthedUser },
     @Body() dto: CompleteTrainingVideoDto,
@@ -38,7 +38,7 @@ export class TrainingUserController {
   }
 
   @Get('me/:trainingId/exam')
-  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   getExam(
     @Req() req: { user: AuthedUser },
     @Param('trainingId') trainingId: string,
@@ -51,7 +51,7 @@ export class TrainingUserController {
   }
 
   @Post('me/:trainingId/exam/submit')
-  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   submitExam(
     @Req() req: { user: AuthedUser },
     @Param('trainingId') trainingId: string,
@@ -66,7 +66,7 @@ export class TrainingUserController {
   }
 
   @Post('me/generate-certificate')
-  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN)
+  @Roles(Role.FIELD_AGENT, Role.CLIENT_ADMIN, Role.CLIENT_USER)
   generateCertificate(@Req() req: { user: AuthedUser }) {
     return this.trainingService.generateCertificate(req.user.sub, req.user.role);
   }

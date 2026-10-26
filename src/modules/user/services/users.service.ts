@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   ConflictException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -19,6 +20,7 @@ import { UpdateInternalUserDto } from '../dto/update-internal-user.dto';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { SuperAdminSettingsService } from '../../super-admin-settings/services/super-admin-settings.service';
 import { UserRepository } from '../repositories/user.repository';
+import { MailService } from '../../mail/services/mail.service';
 
 const DEFAULT_INTERNAL_USER_PASSWORD = 'Internal@123';
 
@@ -26,12 +28,15 @@ type RequestUser = { role: string; clientId?: string; sub?: string };
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     @InjectRepository(User) private repo: Repository<User>,
     @InjectRepository(RoleEntity) private roleRepo: Repository<RoleEntity>,
     @InjectRepository(Client) private clientRepo: Repository<Client>,
     private readonly superAdminSettingsService: SuperAdminSettingsService,
     private readonly userRepository: UserRepository,
+    private readonly mailService: MailService,
   ) {}
 
   findByEmail(email: string) {
@@ -260,10 +265,25 @@ export class UsersService {
       additionalCertUrl: this.normalizeNullableString(dto.additionalCertUrl),
     });
     const saved = await this.repo.save(user);
+
+    try {
+      await this.mailService.sendInternalUserCredentials(
+        saved.email,
+        saved.fullName,
+        password,
+        saved.role === Role.SUPER_ADMIN ? 'Super Admin' : 'Internal User',
+      );
+    } catch (err) {
+      this.logger.error(
+        `Internal user credentials mail failed userId=${saved.id} to=${saved.email}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
+
     const { password: _, resetToken, resetTokenExpiry, ...safe } = saved;
     return {
       code: HttpStatus.CREATED,
-      message: 'Internal user created successfully',
+      message: 'Internal user created successfully. Login credentials emailed to the user.',
       data: safe,
     };
   }

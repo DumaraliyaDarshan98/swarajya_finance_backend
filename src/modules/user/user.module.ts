@@ -9,12 +9,14 @@ import { UsersController } from './controllers/users.controller';
 import { UserDocumentsController } from './controllers/user-documents.controller';
 import { UserRepository } from './repositories/user.repository';
 import { SuperAdminSettingsModule } from '../super-admin-settings/super-admin-settings.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, Role, Client]),
     MulterModule.register({ limits: { fileSize: 10 * 1024 * 1024 } }),
     SuperAdminSettingsModule,
+    MailModule,
   ],
   providers: [UsersService, UserRepository],
   controllers: [UsersController, UserDocumentsController],

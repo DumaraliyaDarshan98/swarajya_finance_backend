@@ -24,7 +24,9 @@ import { ListOcrVerificationQueryDto } from '../dto/list-ocr-verification-query.
 import { UpdateOcrVerificationDto } from '../dto/update-ocr-verification.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
+import { RequirePermissions } from '../../../common/decorators/permissions.decorator';
 import { Role } from '../../../common/enums/role.enum';
 
 type AuthedReq = { user: { role: Role; clientId?: string } };
@@ -62,22 +64,25 @@ const docFileFilter = (
 };
 
 @Controller('ocr-verifications')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER, Role.INTERNAL_USER)
 export class OcrVerificationController {
   constructor(private readonly service: OcrVerificationService) {}
 
   @Get()
+  @RequirePermissions('VERIFICATION', 'VIEW', 'LIST')
   list(@Query() query: ListOcrVerificationQueryDto, @Request() req: AuthedReq) {
     return this.service.list(query, req.user);
   }
 
   @Get('stats')
+  @RequirePermissions('VERIFICATION', 'VIEW', 'LIST')
   stats(@Request() req: AuthedReq, @Query('clientId') clientId?: string) {
     return this.service.stats(req.user, clientId);
   }
 
   @Post()
+  @RequirePermissions('VERIFICATION', 'ADD')
   create(@Request() req: AuthedReq) {
     return this.service.create(req.user);
   }
@@ -105,11 +110,13 @@ export class OcrVerificationController {
   }
 
   @Get(':id')
+  @RequirePermissions('VERIFICATION', 'VIEW', 'LIST')
   getById(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.getById(id, req.user);
   }
 
   @Patch(':id')
+  @RequirePermissions('VERIFICATION', 'EDIT')
   update(
     @Param('id') id: string,
     @Body() dto: UpdateOcrVerificationDto,
@@ -120,6 +127,7 @@ export class OcrVerificationController {
 
   /** Append one or many documents (FormData field: files). */
   @Post(':id/documents/upload')
+  @RequirePermissions('VERIFICATION', 'EDIT', 'ADD')
   @UseInterceptors(
     FilesInterceptor('files', MAX_FILES, {
       storage: memoryStorage(),
@@ -137,6 +145,7 @@ export class OcrVerificationController {
 
   /** Legacy single-file upload (FormData field: file, optional key/isExtra). */
   @Post(':id/documents/upload-one')
+  @RequirePermissions('VERIFICATION', 'EDIT', 'ADD')
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
@@ -161,6 +170,7 @@ export class OcrVerificationController {
   }
 
   @Delete(':id/documents/:key')
+  @RequirePermissions('VERIFICATION', 'EDIT', 'DELETE')
   deleteDocument(
     @Param('id') id: string,
     @Param('key') key: string,
@@ -170,6 +180,7 @@ export class OcrVerificationController {
   }
 
   @Post(':id/merged/upload')
+  @RequirePermissions('VERIFICATION', 'EDIT', 'ADD')
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),
@@ -191,11 +202,13 @@ export class OcrVerificationController {
   }
 
   @Post(':id/generate-report')
+  @RequirePermissions('VERIFICATION', 'EDIT', 'ADD')
   generateReport(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.generateReport(id, req.user);
   }
 
   @Delete(':id')
+  @RequirePermissions('VERIFICATION', 'DELETE')
   delete(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.delete(id, req.user);
   }

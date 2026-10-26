@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { APIResponseInterface } from '../../../common/interfaces/response.interface';
 
@@ -35,11 +36,20 @@ type UploadedFileLike = {
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
 
-  private readonly verifyEndpoint = 'http://localhost:3300/api/document/verify';
-  private readonly identifyEndpoint = 'http://localhost:3300/api/document/identify';
-  // private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/extract-simple';
-  // private readonly verifyEndpoint = 'https://ocr.swarajyarac.com/api/document/verify';
-  // private readonly identifyEndpoint = 'https://ocr.swarajyarac.com/api/document/identify';
+  private readonly ocrBaseUrl = (
+    process.env.OCR_SERVICE_URL || 'http://localhost:3300'
+  ).replace(/\/$/, '');
+
+  private readonly apiKey = String(process.env.OCR_SERVICE_API_KEY || '').trim();
+
+  private readonly verifyEndpoint = `${this.ocrBaseUrl}/api/document/verify`;
+  private readonly identifyEndpoint = `${this.ocrBaseUrl}/api/document/identify`;
+  private readonly healthEndpoint = `${this.ocrBaseUrl}/health`;
+
+  private authHeaders(): HeadersInit {
+    if (!this.apiKey) return {};
+    return { 'X-OCR-API-Key': this.apiKey };
+  }
 
   private summarizeBody(body: unknown, maxLen = 800): string {
     if (body == null) return '(empty body / non-JSON)';
@@ -64,13 +74,36 @@ export class OcrService {
     return fallback;
   }
 
-  /**
-   * Classify document type only (no full OCR / RCU).
-   */
+  /** Ping OCR sidecar before starting heavy jobs. */
+  async assertHealthy(): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(this.healthEndpoint, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch (err) {
+      this.logger.error(
+        `[OCR:HEALTH] unreachable endpoint=${this.healthEndpoint}`,
+        err instanceof Error ? err.stack : err,
+      );
+      throw new ServiceUnavailableException(
+        `OCR service is unreachable (${this.ocrBaseUrl}). Start ocr_extraction or check OCR_SERVICE_URL.`,
+      );
+    }
+    if (!res.ok) {
+      throw new ServiceUnavailableException(
+        `OCR service unhealthy (HTTP ${res.status}) at ${this.ocrBaseUrl}`,
+      );
+    }
+  }
+
   async identifyDocument(
     file: UploadedFileLike | undefined,
   ): Promise<APIResponseInterface<{ documentType: string; confidence: number }>> {
     if (!file) throw new BadRequestException('file is required');
+    await this.assertHealthy();
 
     const filename = file.originalname || 'document.pdf';
     const mime = file.mimetype || 'application/octet-stream';
@@ -86,7 +119,11 @@ export class OcrService {
 
     let res: Response;
     try {
-      res = await fetch(this.identifyEndpoint, { method: 'POST', body: form });
+      res = await fetch(this.identifyEndpoint, {
+        method: 'POST',
+        body: form,
+        headers: this.authHeaders(),
+      });
     } catch (err) {
       this.logger.error(
         `[OCR:IDENTIFY] FAILED to reach service endpoint=${this.identifyEndpoint} file="${filename}"`,
@@ -142,6 +179,7 @@ export class OcrService {
     if (!file) throw new BadRequestException('file is required');
     if (!documentType?.trim())
       throw new BadRequestException('documentType is required');
+    await this.assertHealthy();
 
     const filename = file.originalname || 'document.pdf';
     const mime = file.mimetype || 'application/octet-stream';
@@ -169,7 +207,11 @@ export class OcrService {
 
     let res: Response;
     try {
-      res = await fetch(this.verifyEndpoint, { method: 'POST', body: form });
+      res = await fetch(this.verifyEndpoint, {
+        method: 'POST',
+        body: form,
+        headers: this.authHeaders(),
+      });
     } catch (err) {
       this.logger.error(
         `[OCR:VERIFY] FAILED to reach service endpoint=${this.verifyEndpoint} file="${filename}" documentType="${documentType}"`,

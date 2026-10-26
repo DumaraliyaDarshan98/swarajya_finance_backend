@@ -1,20 +1,50 @@
-<!DOCTYPE html>
-<html>
-  <body style="font-family: Arial, sans-serif; color: #212529; line-height: 1.5;">
-    <h2>Withdrawal Request Approved</h2>
-    <p>Hello {{name}},</p>
-    <p>
-      Your wallet withdrawal request of <strong>₹{{amount}}</strong> has been
-      <strong>approved</strong>. The amount has been deducted from your wallet and will be
-      transferred to the account below.
-    </p>
-    <p><b>Request ID:</b> {{requestId}}</p>
-    <p><b>Bank:</b> {{bankName}}</p>
-    <p><b>Account Number:</b> {{accountNumber}}</p>
-    <p><b>IFSC:</b> {{ifsc}}</p>
-    {{#if adminRemarks}}
-    <p><b>Admin remarks:</b> {{adminRemarks}}</p>
-    {{/if}}
-    <p>If you have any questions, please contact support.</p>
-  </body>
-</html>
+<h1 style="margin:0 0 12px;font-size:22px;font-weight:700;color:#212529;line-height:1.3;">
+  Withdrawal approved
+</h1>
+<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#495057;">
+  Hello <strong>{{name}}</strong>,
+</p>
+<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#495057;">
+  Your wallet withdrawal request of
+  <strong style="color:#1cbb8c;">₹{{amount}}</strong>
+  has been <strong style="color:#1cbb8c;">approved</strong>.
+  The amount has been deducted from your wallet and will be transferred to the bank account below.
+</p>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 20px;background-color:#f0faf6;border:1px solid #c6ebe0;border-radius:10px;">
+  <tr>
+    <td style="padding:16px 18px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding:6px 0;font-size:13px;color:#6c757d;width:140px;">Request ID</td>
+          <td style="padding:6px 0;font-size:14px;color:#212529;font-weight:600;">{{requestId}}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:13px;color:#6c757d;">Bank</td>
+          <td style="padding:6px 0;font-size:14px;color:#212529;">{{bankName}}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:13px;color:#6c757d;">Account number</td>
+          <td style="padding:6px 0;font-size:14px;color:#212529;font-family:Consolas,Monaco,monospace;">{{accountNumber}}</td>
+        </tr>
+        <tr>
+          <td style="padding:6px 0;font-size:13px;color:#6c757d;">IFSC</td>
+          <td style="padding:6px 0;font-size:14px;color:#212529;font-family:Consolas,Monaco,monospace;">{{ifsc}}</td>
+        </tr>
+        {{#if adminRemarks}}
+        <tr>
+          <td style="padding:6px 0;font-size:13px;color:#6c757d;vertical-align:top;">Admin remarks</td>
+          <td style="padding:6px 0;font-size:14px;color:#212529;">{{adminRemarks}}</td>
+        </tr>
+        {{/if}}
+      </table>
+    </td>
+  </tr>
+</table>
+
+{{> button url=loginUrl label="View wallet" brandPrimary=brandPrimary}}
+
+<p style="margin:0;font-size:13px;line-height:1.5;color:#6c757d;">
+  If you have questions about this transfer, contact support at
+  <a href="mailto:{{supportEmail}}" style="color:{{brandPrimary}};">{{supportEmail}}</a>.
+</p>

@@ -18,8 +18,8 @@ export class AuthController {
   }
 
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.service.login(dto);
+  login(@Body() dto: LoginDto, @Req() req: any) {
+    return this.service.login(dto, req);
   }
 
   @Post('forgot-password')

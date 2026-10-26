@@ -82,12 +82,12 @@ async function run() {
     // Avoid sync on connect — dirty rows can block unique indexes.
     synchronize: false,
     logging: false,
-    ssl:
-      process.env.DB_SSL === 'false'
-        ? undefined
-        : {
-            rejectUnauthorized: false,
-          },
+    // ssl:
+    //   process.env.DB_SSL === 'false'
+    //     ? undefined
+    //     : {
+    //         rejectUnauthorized: false,
+    //       },
     entities: [RcuCategory, RcuDocumentType, RcuTrigger],
   };
 

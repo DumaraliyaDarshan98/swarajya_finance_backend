@@ -12,6 +12,8 @@ import type {
   OcrDocumentsPayload,
   OcrVerificationStatus,
 } from '../interfaces/ocr-documents-payload.interface';
+import type { ScrapePayload } from '../../digital-verification/interfaces/scrape-payload.interface';
+import type { ScrapeInput } from '../../verification-enrichment/interfaces/scrape-input.interface';
 
 @Entity('ocr_verifications')
 export class OcrVerification {
@@ -27,6 +29,14 @@ export class OcrVerification {
 
   @Column({ name: 'documents_payload', type: 'json', nullable: true })
   documentsPayload: OcrDocumentsPayload | null;
+
+  /** Public-site scrapes driven by OCR-extracted fields (GST / WHOIS / address / portals). */
+  @Column({ name: 'scrape_payload', type: 'json', nullable: true })
+  scrapePayload: ScrapePayload | null;
+
+  /** Normalized identity fields derived from OCR before scraping. */
+  @Column({ name: 'derived_scrape_input', type: 'json', nullable: true })
+  derivedScrapeInput: ScrapeInput | null;
 
   @Column({ type: 'varchar', length: 50, default: 'DRAFT' })
   status: OcrVerificationStatus;

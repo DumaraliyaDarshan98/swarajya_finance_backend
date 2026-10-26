@@ -1,11 +1,33 @@
 # Portal List Module
 
-See the shared project doc: [`../../docs/PORTAL_LIST.md`](../../docs/PORTAL_LIST.md).
+Admin catalog of verification portals grouped by category. Used by Super Admin UI for CRUD and flags. Seed data ships in `src/modules/portal-list/seed/portal-list.seed.json`.
 
-## Quick commands
+## Entities
+
+| Table | Purpose |
+|-------|---------|
+| `portal_categories` | Category name, sort order, active |
+| `portals` | Portal under a category; URL/metadata; `usedInDigitalReport` flag |
+
+## Admin APIs (`SUPER_ADMIN`)
+
+Base: `/api/admin/portal-list`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/tree` | Full tree (`?activeOnly=true` optional) |
+| GET | `/categories` | List categories |
+| POST | `/categories` | Create category |
+| PUT | `/categories/:id` | Update category |
+| DELETE | `/categories/:id` | Delete category |
+| POST | `/portals` | Create portal |
+| PUT | `/portals/:id` | Update portal |
+| PATCH | `/portals/:id/flags` | Update flags (e.g. `usedInDigitalReport`) |
+| DELETE | `/portals/:id` | Delete portal |
+
+## Seed
 
 ```bash
-# From swarajya_finance_backend
 npm run seed:portal-list
 npm run seed:portal-list -- --force
 ```
@@ -19,7 +41,10 @@ src/modules/portal-list/
   services/portal-list.service.ts
   dto/portal-list.dto.ts
   entities/
-    portal-category.entity.ts
-    portal.entity.ts
   seed/portal-list.seed.json
 ```
+
+## Current usage
+
+- Managed in Super Admin **Portal list** UI.
+- Flag `usedInDigitalReport` is stored on portals; digital-verification report generation does not currently load this catalog at runtime.

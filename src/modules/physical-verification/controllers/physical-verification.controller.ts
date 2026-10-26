@@ -34,7 +34,9 @@ import { UpdateAgentTrackingDto } from '../dto/update-agent-tracking.dto';
 import { AdminReviewNoteDto, RejectPhysicalVerificationDto } from '../dto/admin-review.dto';
 import { JwtAuthGuard } from '../../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../../common/guards/roles.guard';
+import { PermissionsGuard } from '../../../common/guards/permissions.guard';
 import { Roles } from '../../../common/decorators/roles.decorator';
+import { RequirePermissions } from '../../../common/decorators/permissions.decorator';
 import { Role } from '../../../common/enums/role.enum';
 
 type AuthedReq = { user: { role: Role; clientId?: string; sub?: string } };
@@ -44,8 +46,8 @@ const MAX_SIZE = 10 * 1024 * 1024;
 const ALLOWED_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
 
 @Controller('physical-verifications')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER, Role.FIELD_AGENT)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER, Role.FIELD_AGENT, Role.INTERNAL_USER)
 export class PhysicalVerificationController {
   constructor(
     private service: PhysicalVerificationService,
@@ -54,11 +56,13 @@ export class PhysicalVerificationController {
   ) {}
 
   @Get()
+  @RequirePermissions('VERIFICATION', 'VIEW', 'LIST')
   list(@Query() query: ListPhysicalVerificationQueryDto, @Request() req: AuthedReq) {
     return this.service.list(query, req.user);
   }
 
   @Get('stats')
+  @RequirePermissions('VERIFICATION', 'VIEW', 'LIST')
   stats(@Request() req: AuthedReq, @Query('clientId') clientId?: string) {
     return this.service.stats(req.user, clientId);
   }
@@ -223,6 +227,7 @@ export class PhysicalVerificationController {
 
   @Post()
   @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER)
+  @RequirePermissions('VERIFICATION', 'ADD')
   create(@Body() dto: UpsertPhysicalVerificationDto, @Request() req: AuthedReq) {
     return this.service.create(dto, req.user);
   }
@@ -239,12 +244,14 @@ export class PhysicalVerificationController {
   }
 
   @Get(':id')
+  @RequirePermissions('VERIFICATION', 'VIEW', 'LIST')
   getById(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.getById(id, req.user);
   }
 
   @Patch(':id')
   @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER)
+  @RequirePermissions('VERIFICATION', 'EDIT')
   update(
     @Param('id') id: string,
     @Body() dto: UpsertPhysicalVerificationDto,
@@ -255,6 +262,7 @@ export class PhysicalVerificationController {
 
   @Post(':id/submit')
   @Roles(Role.SUPER_ADMIN, Role.CLIENT_ADMIN, Role.CLIENT_USER)
+  @RequirePermissions('VERIFICATION', 'EDIT', 'ADD')
   submit(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.submit(id, req.user);
   }
@@ -353,6 +361,7 @@ export class PhysicalVerificationController {
 
   @Delete(':id')
   @Roles(Role.SUPER_ADMIN)
+  @RequirePermissions('VERIFICATION', 'DELETE')
   delete(@Param('id') id: string, @Request() req: AuthedReq) {
     return this.service.delete(id, req.user);
   }

@@ -31,11 +31,18 @@ import { SubscriptionPlanModule } from './modules/subscription-plan/subscription
 import { RcuTriggersModule } from './modules/rcu-triggers/rcu-triggers.module';
 import { ForensicChecksModule } from './modules/forensic-checks/forensic-checks.module';
 import { PortalListModule } from './modules/portal-list/portal-list.module';
+import { AuditLogModule } from './modules/audit-log/audit-log.module';
 import { QueuesModule } from './queues/queues.module';
+import { CommonModule } from './common/common.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { JobApplicationModule } from './modules/job-application/job-application.module';
 
 @Module({
   imports: [
     AppConfigModule,
+    CommonModule,
+    DashboardModule,
+    JobApplicationModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
@@ -56,7 +63,6 @@ import { QueuesModule } from './queues/queues.module';
         },
       }),
     }),
-    QueuesModule,
     AuthModule,
     MailModule,
     UserModule,
@@ -65,6 +71,7 @@ import { QueuesModule } from './queues/queues.module';
     SuperAdminSettingsModule,
     NotificationModule,
     VerificationModule,
+    QueuesModule,
     FieldAssistanceModule,
     ScrappingModule,
     DigitalVerificationModule,
@@ -80,6 +87,7 @@ import { QueuesModule } from './queues/queues.module';
     RcuTriggersModule,
     ForensicChecksModule,
     PortalListModule,
+    AuditLogModule,
   ],
   controllers: [AppController],
   providers: [

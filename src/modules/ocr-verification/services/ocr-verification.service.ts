@@ -20,6 +20,8 @@ import { OcrNotificationGateway } from '../gateways/ocr-notification.gateway';
 import { RcuTriggersService } from '../../rcu-triggers/services/rcu-triggers.service';
 import { ForensicChecksService } from '../../forensic-checks/services/forensic-checks.service';
 import { detectForensicFileCategory } from '../../forensic-checks/utils/detect-forensic-file-category';
+import { VerificationEnrichmentService } from '../../verification-enrichment/services/verification-enrichment.service';
+import { scrapeInputFromExtractedDocs } from '../../verification-enrichment/helpers/extract-scrape-input.helper';
 import { Role } from '../../../common/enums/role.enum';
 import type {
   OcrCaseForensicSummary,
@@ -73,6 +75,7 @@ export class OcrVerificationService {
     private ocrGateway: OcrNotificationGateway,
     private rcuTriggersService: RcuTriggersService,
     private forensicChecksService: ForensicChecksService,
+    private enrichment: VerificationEnrichmentService,
   ) {}
 
   private ensureUploadDir(): void {
@@ -995,15 +998,63 @@ export class OcrVerificationService {
 
     payload.caseForensicSummary = this.fuseCaseForensicSummary(allDocs);
 
+    // --- Phase 5: from OCR-extracted fields → scrape public sites (same as digital cascade) ---
+    const successfulDocs = allDocs.filter((d) => d.ocrSuccess && d.extractedData);
+    if (successfulDocs.length > 0) {
+      record.progressMessage = 'Scraping public sites from extracted OCR data...';
+      record.documentsPayload = payload;
+      await this.repo.save(record);
+      this.emitProgress(record);
+
+      try {
+        const derived = scrapeInputFromExtractedDocs(successfulDocs);
+        record.derivedScrapeInput = derived;
+        this.logger.log(
+          `[OCR:PIPELINE] SCRAPE seed record=${recordId} pan=${derived.panNumber ?? '-'} gst=${derived.gstNumber ?? '-'} domain=${derived.companyDomain ?? '-'} pin=${derived.residential?.pincode ?? '-'}`,
+        );
+
+        const { scrapePayload, hasFailure: scrapeFail, cascadeNotes } =
+          await this.enrichment.enrichFromDetails(derived);
+        record.scrapePayload = scrapePayload;
+        // Soft scrape failures do not fail the whole OCR case unless OCR itself failed.
+        if (scrapeFail) {
+          this.logger.warn(
+            `[OCR:PIPELINE] SCRAPE partial failure record=${recordId} notes=${cascadeNotes.join(' | ')}`,
+          );
+        } else {
+          this.logger.log(
+            `[OCR:PIPELINE] SCRAPE OK record=${recordId} notes=${cascadeNotes.join(' | ') || 'none'}`,
+          );
+        }
+      } catch (err: any) {
+        this.logger.error(
+          `[OCR:PIPELINE] SCRAPE FAIL record=${recordId} error="${err?.message ?? err}"`,
+          err?.stack,
+        );
+        record.scrapePayload = {
+          pipeline: {
+            source: 'verification-enrichment',
+            scrapedAt: new Date().toISOString(),
+            success: false,
+            error: err?.message ?? 'Post-OCR scrape enrichment failed',
+          },
+        };
+      }
+    } else {
+      record.scrapePayload = null;
+      record.derivedScrapeInput = null;
+    }
+
     const failedDocs = allDocs.filter((d) => d.storedFileName && !d.ocrSuccess);
     const failedNames = failedDocs.map((d) => d.label).join(', ');
     record.status = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
     const caseVerdict = payload.caseForensicSummary?.verdictLabel;
     const caseScore = payload.caseForensicSummary?.riskScore;
+    const scrapeOk = !!record.scrapePayload?.pipeline?.success;
     record.progressMessage = hasFailure
       ? `Failed: ${failedNames}`
       : caseVerdict
-        ? `Report generated — ${caseVerdict} (risk ${caseScore}/100)`
+        ? `Report generated — ${caseVerdict} (risk ${caseScore}/100)${scrapeOk ? ' · scrapes done' : ''}`
         : 'Report generated successfully';
     record.reportGeneratedAt = hasFailure ? null : new Date();
     record.documentsPayload = payload;

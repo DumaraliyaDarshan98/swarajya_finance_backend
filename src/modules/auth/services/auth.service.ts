@@ -14,6 +14,10 @@ import { MailService } from '../../mail/services/mail.service';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { FieldAssistanceService } from '../../field-assistance/services/field-assistance.service';
 import { TrainingService } from '../../training/services/training.service';
+import { AuditLogService } from '../../audit-log/services/audit-log.service';
+import { extractRequestMeta } from '../../audit-log/helpers/request-meta.helper';
+import { PermissionsService } from '../../../common/services/permissions.service';
+import type { Request } from 'express';
 
 export type PermissionEntry = { moduleCode: string; permissions: string[] };
 
@@ -25,6 +29,8 @@ export class AuthService {
     private mailService: MailService,
     private fieldAssistanceService: FieldAssistanceService,
     private trainingService: TrainingService,
+    private auditLogService: AuditLogService,
+    private permissionsService: PermissionsService,
   ) {}
 
   async createSuperAdmin(dto: any): Promise<APIResponseInterface<any>> {
@@ -52,9 +58,46 @@ export class AuthService {
     };
   }
 
-  async login(dto: any): Promise<APIResponseInterface<any>> {
+  async login(
+    dto: any,
+    req?: Request,
+  ): Promise<APIResponseInterface<any>> {
+    const meta = req ? extractRequestMeta(req) : null;
     const user = await this.usersService.findByEmail(dto.email);
+
+    const failAudit = (reason: string, partial?: Partial<{
+      userId: string;
+      userEmail: string;
+      userName: string;
+      userRole: string;
+      clientId: string;
+    }>) => {
+      this.auditLogService.logAsync({
+        action: 'LOGIN_FAILED',
+        module: 'AUTH',
+        description: `Login failed for ${dto.email || 'unknown'}: ${reason}`,
+        userId: partial?.userId ?? null,
+        userEmail: partial?.userEmail ?? dto.email ?? null,
+        userName: partial?.userName ?? null,
+        userRole: partial?.userRole ?? null,
+        clientId: partial?.clientId ?? null,
+        ipAddress: meta?.ipAddress ?? null,
+        userAgent: meta?.userAgent ?? null,
+        method: meta?.method ?? 'POST',
+        path: meta?.path ?? '/api/auth/login',
+        statusCode: 401,
+        metadata: { reason },
+      });
+    };
+
     if (!user || !(await bcrypt.compare(dto.password, user.password))) {
+      failAudit('Invalid email or password', {
+        userId: user?.id,
+        userEmail: user?.email ?? dto.email,
+        userName: user?.fullName,
+        userRole: user?.role,
+        clientId: user?.client?.id,
+      });
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -65,6 +108,17 @@ export class AuthService {
     if (user.role === Role.FIELD_AGENT) {
       const fa = await this.fieldAssistanceService.findByUserId(user.id);
       if (!fa || fa.status !== 'Active') {
+        const reason =
+          fa?.status === 'Pending'
+            ? 'Registration pending approval'
+            : 'Field agent inactive or not found';
+        failAudit(reason, {
+          userId: user.id,
+          userEmail: user.email,
+          userName: user.fullName,
+          userRole: user.role,
+          clientId: user.client?.id,
+        });
         if (fa?.status === 'Pending') {
           throw new UnauthorizedException(
             'Your registration is pending super admin approval',
@@ -80,12 +134,18 @@ export class AuthService {
       };
     }
 
-    const permissions = this.getUserPermissions(user);
+    // Same permission matrix as PermissionsGuard (custom roles included).
+    const permissions = await this.permissionsService.getPermissionEntries(
+      user.id,
+      String(user.role),
+    );
 
     const accessToken = this.jwtService.sign({
       sub: user.id,
       role: user.role,
       clientId: user.client?.id,
+      email: user.email,
+      fullName: user.fullName,
     });
 
     const { password, resetToken, resetTokenExpiry, ...userSafe } = user;
@@ -94,6 +154,25 @@ export class AuthService {
       user.id,
       user.role,
     );
+
+    this.auditLogService.logAsync({
+      action: 'LOGIN',
+      module: 'AUTH',
+      description: `User logged in (${user.email})`,
+      userId: user.id,
+      userEmail: user.email,
+      userName: user.fullName,
+      userRole: user.role,
+      clientId: user.client?.id ?? null,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+      method: meta?.method ?? 'POST',
+      path: meta?.path ?? '/api/auth/login',
+      statusCode: 200,
+      metadata: {
+        role: user.role,
+      },
+    });
 
     return {
       code: HttpStatus.OK,
@@ -110,105 +189,6 @@ export class AuthService {
         trainingStatus,
       },
     };
-  }
-
-  getUserPermissions(user: any): PermissionEntry[] {
-    if (user.role === Role.SUPER_ADMIN) {
-      return [
-        {
-          moduleCode: 'CLIENT_MANAGEMENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'USER_MANAGEMENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'ROLE_MANAGEMENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'SETTINGS',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'INTERNAL_USER_MANAGEMENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'VERIFICATION',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'FIELD_AGENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'REPORT_CUSTOMIZATION',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-      ];
-    }
-    if (user.role === Role.FIELD_AGENT) {
-      return [{ moduleCode: 'FIELD_AGENT', permissions: ['VIEW', 'LIST'] }];
-    }
-
-    const customRolePerms = this.permissionsFromCustomRole(user);
-    if (customRolePerms !== null) {
-      return customRolePerms;
-    }
-
-    if (user.role === Role.INTERNAL_USER) {
-      return [{ moduleCode: 'CLIENT_MANAGEMENT', permissions: ['VIEW'] }];
-    }
-    if (user.role === Role.CLIENT_ADMIN) {
-      return [
-        { moduleCode: 'CLIENT_MANAGEMENT', permissions: ['VIEW', 'LIST'] },
-        {
-          moduleCode: 'USER_MANAGEMENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'ROLE_MANAGEMENT',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'SETTINGS',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-        {
-          moduleCode: 'VERIFICATION',
-          permissions: ['VIEW', 'ADD', 'EDIT', 'LIST', 'DELETE'],
-        },
-      ];
-    }
-    return [];
-  }
-
-  /** Returns null when no custom role is assigned; [] when role is inactive or has no permissions. */
-  private permissionsFromCustomRole(user: any): PermissionEntry[] | null {
-    if (!user.customRole) {
-      return null;
-    }
-    if (user.customRole.isActive === false) {
-      return [];
-    }
-    if (!user.customRole.rolePermissions?.length) {
-      return [];
-    }
-    const byModule: Record<string, string[]> = {};
-    for (const rp of user.customRole.rolePermissions) {
-      if (rp.module?.code) {
-        if (!byModule[rp.module.code]) byModule[rp.module.code] = [];
-        if (rp.permission && !byModule[rp.module.code].includes(rp.permission)) {
-          byModule[rp.module.code].push(rp.permission);
-        }
-      }
-    }
-    return Object.entries(byModule).map(([moduleCode, permissions]) => ({
-      moduleCode,
-      permissions,
-    }));
   }
 
   async forgotPassword(email: string): Promise<APIResponseInterface<any>> {

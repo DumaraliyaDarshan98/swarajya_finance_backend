@@ -59,10 +59,36 @@ Field agent onboarding: addresses, banks, education, family, emergency contacts,
 ### `field_agent_wallets` / `field_agent_wallet_transactions`
 Agent balance and per-visit earnings.
 
+## Security & activity
+
+### `audit_logs`
+Immutable trail of logins and mutating API actions (IP, geo, user-agent, module, status).
+
+| Column | Notes |
+|--------|-------|
+| action | LOGIN, LOGIN_FAILED, CREATE, UPDATE, DELETE, … |
+| module | AUTH, VERIFICATION, … |
+| user_id / user_email / user_role / client_id | actor context |
+| ip_address / city / region / country / location_label | request geo |
+| method / path / status_code / metadata | HTTP context |
+
+### `user_notifications`
+In-app notifications per user (email/SMS still go through NotificationService).
+
+| Column | Notes |
+|--------|-------|
+| user_id | recipient |
+| title / body / icon | display |
+| read | boolean |
+| cta_url | optional deep link |
+
 ## Platform
 
 ### `super_admin_settings`
 Key-value platform configuration.
+
+### Portal catalog
+`portal_categories` / `portals` — flagged with `used_in_digital_report` and embedded into digital report `scrapePayload.portalCatalog`.
 
 ## Migrations
 

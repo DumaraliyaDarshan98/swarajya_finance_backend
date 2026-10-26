@@ -63,10 +63,10 @@ async function run() {
     namingStrategy: new SnakeNamingStrategy(),
     synchronize: false,
     logging: false,
-    ssl:
-      process.env.DB_SSL === 'false'
-        ? undefined
-        : { rejectUnauthorized: false },
+    // ssl:
+    //   process.env.DB_SSL === 'false'
+    //     ? undefined
+    //     : { rejectUnauthorized: false },
     entities: [PortalCategory, Portal],
   } as any);
 

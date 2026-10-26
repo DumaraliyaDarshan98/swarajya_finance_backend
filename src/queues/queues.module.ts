@@ -1,8 +1,16 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
+import { JobQueueService } from './job-queue.service';
+import { OcrJobRegistrar } from './ocr-job.registrar';
+import { VerificationModule } from '../modules/verification/verification.module';
 
 /**
- * Placeholder for background jobs (report generation, Puppeteer scraping, emails).
- * Wire BullMQ/Redis here when moving heavy work off the HTTP request path.
+ * Background jobs foundation.
+ * Currently in-process; set REDIS_URL later and migrate JobQueueService to BullMQ.
  */
-@Module({})
+@Global()
+@Module({
+  imports: [VerificationModule],
+  providers: [JobQueueService, OcrJobRegistrar],
+  exports: [JobQueueService],
+})
 export class QueuesModule {}

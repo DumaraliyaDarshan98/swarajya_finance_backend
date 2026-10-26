@@ -26,6 +26,12 @@ Mandatory role-based training for **Field Agent** and **Client Admin**. Super Ad
 | DELETE | `/api/admin/trainings/:id` | Delete |
 | GET | `/api/admin/trainings/reset-config` | Get reset days |
 | PUT | `/api/admin/trainings/reset-config` | Update reset days |
+| GET | `/api/admin/trainings/:id/questions` | List exam questions |
+| POST | `/api/admin/trainings/:id/questions` | Create question |
+| PUT | `/api/admin/trainings/:id/questions/:questionId` | Update question |
+| DELETE | `/api/admin/trainings/:id/questions/:questionId` | Delete question |
+| GET | `/api/admin/trainings/certificates/by-client/:clientId` | Certificates for a client |
+| GET | `/api/admin/trainings/certificates/by-field-agent/:fieldAssistantId` | Certificates for a field agent |
 
 ## User flow (multi-video per role)
 
@@ -37,8 +43,14 @@ Mandatory role-based training for **Field Agent** and **Client Admin**. Super Ad
 
 | Method | Path | Description |
 |--------|------|-------------|
+| GET | `/api/trainings/me/status` | Training gate status |
+| GET | `/api/trainings/me/assigned` | Assigned lessons (ordered) |
 | POST | `/api/trainings/me/complete` | Complete current video (`{ trainingId }`) |
-| POST | `/api/trainings/me/generate-certificate` | Generate certificate after all videos done |
+| GET | `/api/trainings/me/:trainingId/exam` | Load exam for a lesson |
+| POST | `/api/trainings/me/:trainingId/exam/submit` | Submit exam answers |
+| POST | `/api/trainings/me/generate-certificate` | Generate certificate after all videos (and exams if configured) done |
+| GET | `/api/trainings/me/certificates` | Current user certificates |
+| GET | `/api/trainings/me/certificates/:id` | Certificate by id |
 
 ## Login
 

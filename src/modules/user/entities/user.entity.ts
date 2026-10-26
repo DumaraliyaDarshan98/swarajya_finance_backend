@@ -3,6 +3,7 @@ import {
   Column,
   PrimaryGeneratedColumn,
   ManyToOne,
+  JoinColumn,
   CreateDateColumn,
 } from 'typeorm';
 import { Role } from '../../../common/enums/role.enum';
@@ -33,6 +34,7 @@ export class User {
   customRoleId: string | null;
 
   @ManyToOne(() => RoleEntity, (r) => r.users, { nullable: true })
+  @JoinColumn({ name: 'custom_role_id' })
   customRole: RoleEntity | null;
 
   @Column({ type: 'varchar', length: 255, nullable: true })

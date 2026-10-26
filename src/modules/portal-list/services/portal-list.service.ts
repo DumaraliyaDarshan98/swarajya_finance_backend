@@ -63,6 +63,46 @@ export class PortalListService {
     private readonly portalRepo: Repository<Portal>,
   ) {}
 
+  /**
+   * Portals/categories flagged for digital reports (active only).
+   * Embedded into digital verification scrapePayload at report generation time.
+   */
+  async getDigitalReportCatalog(): Promise<{
+    categories: Array<{
+      id: string;
+      key: string;
+      name: string;
+      portals: Array<{
+        id: string;
+        title: string;
+        state: string;
+        url: string;
+      }>;
+    }>;
+    portalCount: number;
+  }> {
+    const tree = await this.getTree({ activeOnly: true });
+    const categories = (tree.data?.categories ?? [])
+      .filter((c) => c.usedInDigitalReport)
+      .map((c) => ({
+        id: c.id,
+        key: c.key,
+        name: c.name,
+        portals: c.portals
+          .filter((p) => p.usedInDigitalReport && p.isActive)
+          .map((p) => ({
+            id: p.id,
+            title: p.title,
+            state: p.state,
+            url: p.url,
+          })),
+      }))
+      .filter((c) => c.portals.length > 0);
+
+    const portalCount = categories.reduce((s, c) => s + c.portals.length, 0);
+    return { categories, portalCount };
+  }
+
   async getTree(options?: {
     activeOnly?: boolean;
   }): Promise<APIResponseInterface<PortalTreePayload>> {

@@ -16,14 +16,28 @@ export class UserRepository extends BaseRepository<User> {
   findByEmail(email: string): Promise<User | null> {
     return this.repository.findOne({
       where: { email },
-      relations: ['customRole', 'client'],
+      relations: {
+        client: true,
+        customRole: {
+          rolePermissions: {
+            module: true,
+          },
+        },
+      },
     });
   }
 
   findByIdWithRelations(id: string): Promise<User | null> {
     return this.repository.findOne({
       where: { id },
-      relations: ['customRole', 'customRole.rolePermissions', 'client'],
+      relations: {
+        client: true,
+        customRole: {
+          rolePermissions: {
+            module: true,
+          },
+        },
+      },
     });
   }
 }

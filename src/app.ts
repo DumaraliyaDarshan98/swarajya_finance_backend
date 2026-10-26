@@ -8,6 +8,12 @@ export async function createApp() {
   const app = await NestFactory.create(AppModule, { cors: true });
   const config = app.get(ConfigService);
 
+  // Honor X-Forwarded-For when behind a reverse proxy (accurate audit IP/geo).
+  const expressApp = app.getHttpAdapter().getInstance();
+  if (typeof expressApp?.set === 'function') {
+    expressApp.set('trust proxy', 1);
+  }
+
   // Exotel StatusCallback posts application/x-www-form-urlencoded — ensure parsers are on.
   app.use(urlencoded({ extended: true, limit: '2mb' }));
   app.use(json({ limit: '2mb' }));

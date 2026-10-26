@@ -245,6 +245,19 @@ export class RolesService {
     }
   }
 
+  /** Modules only relevant to platform (super-admin / internal) role screens & nav. */
+  private static readonly PLATFORM_ONLY_MODULE_CODES = new Set([
+    'CLIENT_MANAGEMENT',
+    'INTERNAL_USER_MANAGEMENT',
+    'FIELD_AGENT',
+    'PORTAL_LIST',
+    'AI_TOOLS',
+    'RCU_TRIGGERS',
+    'FORENSIC_CHECKS',
+    'REPORT_CUSTOMIZATION',
+  ]);
+  // AUDIT_LOG is available to both platform and client role UIs
+
   async getModules(user?: {
     role: string;
   }): Promise<APIResponseInterface<AppModule[]>> {
@@ -253,14 +266,10 @@ export class RolesService {
     let filtered = list;
 
     if (role === RoleEnum.CLIENT_ADMIN || role === RoleEnum.CLIENT_USER) {
-      const excluded = new Set([
-        'INTERNAL_USER_MANAGEMENT',
-        'FIELD_AGENT',
-        'CLIENT_MANAGEMENT',
-      ]);
-      filtered = list.filter((m) => !excluded.has(m.code));
-    } else if (role === RoleEnum.INTERNAL_USER) {
-      filtered = list.filter((m) => m.code !== 'FIELD_AGENT');
+      // Client role UI: only modules that appear in client-admin nav / features
+      filtered = list.filter(
+        (m) => !RolesService.PLATFORM_ONLY_MODULE_CODES.has(m.code),
+      );
     }
 
     return {
@@ -287,54 +296,103 @@ export class RolesService {
   }
 
   async seedModulesIfEmpty(): Promise<void> {
+    /** Keep in sync with frontend nav (menu.service) moduleCode values. */
     const defaults = [
+      {
+        name: 'Dashboard',
+        code: 'DASHBOARD',
+        description: 'Home dashboard',
+        sortOrder: 0,
+      },
       {
         name: 'Client Management',
         code: 'CLIENT_MANAGEMENT',
-        description: 'Manage clients',
+        description: 'Manage client organizations',
         sortOrder: 1,
       },
       {
         name: 'User Management',
         code: 'USER_MANAGEMENT',
-        description: 'Manage users',
+        description: 'Manage client / organization users',
         sortOrder: 2,
       },
       {
         name: 'Role Management',
         code: 'ROLE_MANAGEMENT',
-        description: 'Manage roles and permissions',
+        description: 'Manage roles and module permissions',
         sortOrder: 3,
       },
       {
         name: 'Settings',
         code: 'SETTINGS',
-        description: 'Application settings',
+        description: 'Application / client settings',
         sortOrder: 4,
       },
       {
         name: 'Internal User Management',
         code: 'INTERNAL_USER_MANAGEMENT',
-        description: 'Manage internal/super-admin users',
+        description: 'Manage platform internal users',
         sortOrder: 5,
       },
       {
         name: 'Verification',
         code: 'VERIFICATION',
-        description: 'Manage verification requests and reports',
+        description: 'Digital, OCR, and physical verification',
         sortOrder: 6,
       },
       {
         name: 'Field Agent',
         code: 'FIELD_AGENT',
-        description: 'Manage field agents and wallets',
+        description: 'Field agents, attendance, wallet, withdrawals',
         sortOrder: 7,
       },
       {
         name: 'Report Customization',
         code: 'REPORT_CUSTOMIZATION',
-        description: 'Customize verification report layouts by type',
+        description: 'Customize verification report layouts',
         sortOrder: 8,
+      },
+      {
+        name: 'Portal List',
+        code: 'PORTAL_LIST',
+        description: 'Portal catalog master',
+        sortOrder: 9,
+      },
+      {
+        name: 'AI Tools',
+        code: 'AI_TOOLS',
+        description: 'AI tools master',
+        sortOrder: 10,
+      },
+      {
+        name: 'RCU Triggers',
+        code: 'RCU_TRIGGERS',
+        description: 'RCU trigger catalog',
+        sortOrder: 11,
+      },
+      {
+        name: 'Forensic Checks',
+        code: 'FORENSIC_CHECKS',
+        description: 'Forensic checks catalog',
+        sortOrder: 12,
+      },
+      {
+        name: 'Training',
+        code: 'TRAINING',
+        description: 'Training lessons and certificates',
+        sortOrder: 13,
+      },
+      {
+        name: 'Subscription',
+        code: 'SUBSCRIPTION',
+        description: 'Subscription plans (admin) / plans (client)',
+        sortOrder: 14,
+      },
+      {
+        name: 'Audit Logs',
+        code: 'AUDIT_LOG',
+        description: 'View security and activity audit trails',
+        sortOrder: 15,
       },
     ];
     const existing = await this.moduleRepo.find({
