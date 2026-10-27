@@ -11,7 +11,9 @@ export default registerAs('database', () => ({
   database: process.env.DB_NAME ?? 'swarajya_finance',
   connectorPackage: 'mysql2' as const,
   namingStrategy: new SnakeNamingStrategy(),
-  synchronize: process.env.DB_SYNCHRONIZE !== 'false',
+  // Default OFF — enable explicitly with DB_SYNCHRONIZE=true (dev only).
+  // Prod sync was failing on orphan FKs (e.g. physical_verifications.client_id).
+  synchronize: process.env.DB_SYNCHRONIZE === 'true',
   logging: process.env.DB_LOGGING === 'true',
   entities: [join(__dirname, '../modules/**/entities/*.entity.{ts,js}')],
   migrations: [join(__dirname, '../database/migrations/*.{ts,js}')],
