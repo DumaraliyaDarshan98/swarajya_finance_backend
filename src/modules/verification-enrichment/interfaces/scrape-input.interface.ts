@@ -29,7 +29,11 @@ export interface ScrapeInput {
 
 export interface EnrichmentResult {
   scrapePayload: ScrapePayload;
-  /** True when a hard business verification step failed. Soft address/portal failures do not set this. */
+  /**
+   * True when one or more attempted scrapes had soft failures (site down / mismatch data).
+   * Does NOT mean report generation should be marked FAILED — always persist scrapePayload
+   * and generate the report; surface per-site success flags in the UI instead.
+   */
   hasFailure: boolean;
   /** Fields that were used (after OCR derivation or form entry). */
   derivedFrom: ScrapeInput;

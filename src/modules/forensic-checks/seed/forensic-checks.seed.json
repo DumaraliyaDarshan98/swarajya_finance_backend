@@ -318,6 +318,17 @@
       "sortOrder": 64
     },
     {
+      "code": "IMAGE_MARK_OVERLAY",
+      "engineKey": "IMAGE_MARK_OVERLAY",
+      "threatCode": "T054",
+      "category": "IMAGE",
+      "title": "Pen / annotation marks detected on image",
+      "description": "Saturated ink-like overlays (drawn circles, scribbles, highlighter) found on the image.",
+      "severity": "high",
+      "score": 38,
+      "sortOrder": 65
+    },
+    {
       "code": "IMAGE_VISUAL_TAMPER_DETECTED",
       "engineKey": "VISUAL_TAMPER_DETECTED",
       "threatCode": "T050",

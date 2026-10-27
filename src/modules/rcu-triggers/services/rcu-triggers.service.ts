@@ -726,7 +726,28 @@ export class RcuTriggersService {
       ],
       salarysleep: ['salaryslip', 'salarysleep', 'payslip'],
       payslip: ['salaryslip', 'payslip'],
-      form16: ['form16'],
+      form16: ['form16', 'tdscertificate'],
+      tdscertificate: ['form16', 'tdscertificate'],
+      leavingcertificate: [
+        'leavingcertificate',
+        'schoolleavingcertificate',
+        'transfercertificate',
+        'lc',
+      ],
+      marksheet: [
+        'marksheet',
+        'statementofmarks',
+        'hscmarksheet',
+        'sscmarksheet',
+      ],
+      udyamcertificate: [
+        'udyamcertificate',
+        'udyam',
+        'udyogaadhaar',
+        'msme',
+        'msmecertificate',
+      ],
+      udyam: ['udyamcertificate', 'udyam', 'udyogaadhaar', 'msme'],
       // Keep generic bank aliases NON-variant-specific so Manual/Digital/Coded
       // do not all score 100 and accidentally pick a type with 0 OCR triggers.
       bankstatement: ['bankstatement', 'bankstmt', 'accountstatement'],

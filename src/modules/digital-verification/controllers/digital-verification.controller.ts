@@ -20,7 +20,7 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { RequirePermissions } from '../../../common/decorators/permissions.decorator';
 import { Role } from '../../../common/enums/role.enum';
 
-type AuthedReq = { user: { role: Role; clientId?: string } };
+type AuthedReq = { user: { sub?: string; role: Role; clientId?: string } };
 
 @Controller('digital-verifications')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

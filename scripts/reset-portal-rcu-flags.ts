@@ -49,10 +49,10 @@ async function run() {
     namingStrategy: new SnakeNamingStrategy(),
     synchronize: false,
     logging: false,
-    ssl:
-      process.env.DB_SSL === 'false'
-        ? undefined
-        : { rejectUnauthorized: false },
+    // ssl:
+    //   process.env.DB_SSL === 'false'
+    //     ? undefined
+    //     : { rejectUnauthorized: false },
   } as any);
 
   try {
@@ -67,7 +67,7 @@ async function run() {
         );
         console.log('Added portals.used_in_digital_report');
       }
-      await ds.query('UPDATE `portals` SET `used_in_digital_report` = 0');
+      await ds.query('UPDATE `portals` SET `used_in_digital_report` = 1');
       console.log('Portals Digital Report flag reset to false.');
     }
 
@@ -80,18 +80,18 @@ async function run() {
         console.log('Added portal_categories.used_in_digital_report');
       }
       await ds.query(
-        'UPDATE `portal_categories` SET `used_in_digital_report` = 0',
+        'UPDATE `portal_categories` SET `used_in_digital_report` = 1',
       );
       console.log('Portal categories Digital Report flag reset to false.');
     }
 
     if (await tableExists(ds, 'rcu_document_types')) {
-      await ds.query('UPDATE `rcu_document_types` SET `used_in_ocr` = 0');
+      await ds.query('UPDATE `rcu_document_types` SET `used_in_ocr` = 1');
       console.log('RCU document types usedInOcr reset to false.');
     }
 
     if (await tableExists(ds, 'rcu_triggers')) {
-      await ds.query('UPDATE `rcu_triggers` SET `used_in_ocr` = 0');
+      await ds.query('UPDATE `rcu_triggers` SET `used_in_ocr` = 1');
       console.log('RCU triggers usedInOcr reset to false.');
     }
 
@@ -103,7 +103,7 @@ async function run() {
         );
         console.log('Added rcu_categories.used_in_ocr');
       }
-      await ds.query('UPDATE `rcu_categories` SET `used_in_ocr` = 0');
+      await ds.query('UPDATE `rcu_categories` SET `used_in_ocr` = 1');
       console.log('RCU categories usedInOcr reset to false.');
     }
 

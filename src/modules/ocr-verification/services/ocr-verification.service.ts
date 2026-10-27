@@ -51,14 +51,19 @@ const IDENTIFIED_TYPE_MAP: Array<{
   { match: /aadhaar|aadhar/i, documentType: 'aadhaar', label: 'Aadhaar Card' },
   { match: /\bpan\b/i, documentType: 'pan', label: 'PAN Card' },
   { match: /voter/i, documentType: 'voter card', label: 'Voter Card' },
-  { match: /driving|license|licence/i, documentType: 'driving license', label: 'Driving License' },
+  // Specific types BEFORE bare "license" patterns
+  { match: /udyam|udyog\s*aadhaar|msme/i, documentType: 'udyam certificate', label: 'Udyam Certificate' },
+  { match: /leaving\s*certificate|school\s*leaving|transfer\s*certificate|\blc\b/i, documentType: 'leaving certificate', label: 'Leaving Certificate' },
+  { match: /mark\s*sheet|marksheet|statement\s*of\s*marks/i, documentType: 'marksheet', label: 'Marksheet' },
+  { match: /trade\s*licen[cs]e/i, documentType: 'trade license', label: 'Trade License' },
+  // Require "driving" — do NOT match every "license" (Udyam/Trade were mislabeled as DL)
+  { match: /driving\s*licen[cs]e|\bdriving\b/i, documentType: 'driving license', label: 'Driving License' },
   { match: /passport/i, documentType: 'passport', label: 'Passport' },
   { match: /salary/i, documentType: 'salary slip', label: 'Salary Slip' },
-  { match: /form\s*16/i, documentType: 'form 16', label: 'Form 16' },
+  { match: /form\s*16|tds\s*certificate/i, documentType: 'form 16', label: 'Form 16' },
   { match: /bank\s*statement|account\s*statement/i, documentType: 'bank statement', label: 'Bank Statement' },
   { match: /\bitr\b/i, documentType: 'itr', label: 'ITR' },
   { match: /\bgst\b/i, documentType: 'gst', label: 'GST' },
-  { match: /trade\s*license/i, documentType: 'trade license', label: 'Trade License' },
   { match: /address\s*proof/i, documentType: 'address proof', label: 'Address Proof' },
   { match: /agreement/i, documentType: 'agreement', label: 'Agreement Copy' },
   { match: /ownership|partnership\s*deed|deed/i, documentType: 'ownership deed', label: 'Ownership Deed' },
@@ -122,6 +127,45 @@ export class OcrVerificationService {
     };
   }
 
+  /** Deep-clone JSON payload so TypeORM always persists a fresh value (avoids silent NULL JSON writes). */
+  private clonePayload(payload: OcrDocumentsPayload): OcrDocumentsPayload {
+    return JSON.parse(JSON.stringify(payload)) as OcrDocumentsPayload;
+  }
+
+  /**
+   * Force-write OCR JSON + status fields via UPDATE.
+   * Nested mutation of the same documentsPayload reference is invisible to TypeORM dirty-checking
+   * and was wiping documents_payload to NULL after report generation.
+   */
+  private async persistOcrProgress(
+    record: OcrVerification,
+    payload: OcrDocumentsPayload,
+    patch: Partial<
+      Pick<
+        OcrVerification,
+        | 'status'
+        | 'progressMessage'
+        | 'reportGeneratedAt'
+        | 'scrapePayload'
+        | 'derivedScrapeInput'
+      >
+    > = {},
+  ): Promise<void> {
+    Object.assign(record, patch);
+    const cloned = this.clonePayload(payload);
+    record.documentsPayload = cloned;
+
+    // TypeORM QueryDeepPartialEntity rejects Record<string, unknown> JSON column shapes.
+    await this.repo.update({ id: record.id }, {
+      documentsPayload: cloned,
+      status: record.status,
+      progressMessage: record.progressMessage,
+      reportGeneratedAt: record.reportGeneratedAt,
+      scrapePayload: record.scrapePayload,
+      derivedScrapeInput: record.derivedScrapeInput,
+    } as never);
+  }
+
   private normalizeIdentifiedType(raw: string): { documentType: string; label: string } {
     const text = (raw || '').trim() || 'Other';
     for (const row of IDENTIFIED_TYPE_MAP) {
@@ -149,16 +193,21 @@ export class OcrVerificationService {
     if (/aadhaar|aadhar/.test(blob)) return 'aadhaar';
     if (/\bpan\b|pancard|pan card/.test(blob)) return 'pan';
     if (/voter/.test(blob)) return 'voter card';
-    if (/driving|license|licence/.test(blob)) return 'driving license';
+    if (/udyam|udyog\s*aadhaar|msme/.test(blob)) return 'udyam certificate';
+    if (/leaving\s*certificate|school\s*leaving|transfer\s*certificate/.test(blob)) {
+      return 'leaving certificate';
+    }
+    if (/mark\s*sheet|marksheet|statement\s*of\s*marks/.test(blob)) return 'marksheet';
+    if (/trade\s*licen[cs]e/.test(blob)) return 'trade license';
+    if (/driving\s*licen[cs]e|\bdriving\b/.test(blob)) return 'driving license';
     if (/passport/.test(blob)) return 'passport';
     if (/salary|payslip|pay\s*slip/.test(blob)) return 'salary slip';
-    if (/form\s*16|form16/.test(blob)) return 'form 16';
+    if (/form\s*16|form16|tds\s*certificate/.test(blob)) return 'form 16';
     if (/bank|passbook|account\s*stmt|account\s*statement/.test(blob)) {
       return 'bank statement';
     }
     if (/\bitr\b|income\s*tax/.test(blob)) return 'itr';
     if (/\bgst\b/.test(blob)) return 'gst';
-    if (/trade\s*license/.test(blob)) return 'trade license';
 
     const identified = (identifiedType || '').trim().toLowerCase();
     if (identified && identified !== 'other') return identified;
@@ -529,8 +578,8 @@ export class OcrVerificationService {
       });
     }
 
-    record.documentsPayload = payload;
-    const saved = await this.repo.save(record);
+    await this.persistOcrProgress(record, payload);
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
     return {
       code: HttpStatus.OK,
       message: 'OCR verification updated successfully',
@@ -595,8 +644,8 @@ export class OcrVerificationService {
           pdfMetadata: null,
           uploadedAt: new Date().toISOString(),
         });
-        record.documentsPayload = payload;
-        const saved = await this.repo.save(record);
+        await this.persistOcrProgress(record, payload);
+        const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
         return {
           code: HttpStatus.OK,
           message: 'Document uploaded successfully',
@@ -634,13 +683,14 @@ export class OcrVerificationService {
       });
     }
 
-    record.documentsPayload = payload;
-    if (record.status === 'REPORT_GENERATED' || record.status === 'FAILED') {
-      record.status = 'DRAFT';
-      record.progressMessage = null;
-      record.reportGeneratedAt = null;
-    }
-    const saved = await this.repo.save(record);
+    const resetAfterReport =
+      record.status === 'REPORT_GENERATED' || record.status === 'FAILED';
+    await this.persistOcrProgress(record, payload, {
+      status: resetAfterReport ? 'DRAFT' : record.status,
+      progressMessage: resetAfterReport ? null : record.progressMessage,
+      reportGeneratedAt: resetAfterReport ? null : record.reportGeneratedAt,
+    });
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
     return {
       code: HttpStatus.OK,
       message:
@@ -678,8 +728,8 @@ export class OcrVerificationService {
 
     this.unlinkStoredFile(removed.storedFileName);
     this.compactPayloadDocuments(payload);
-    record.documentsPayload = payload;
-    const saved = await this.repo.save(record);
+    await this.persistOcrProgress(record, payload);
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
     return {
       code: HttpStatus.OK,
       message: 'Document deleted successfully',
@@ -709,8 +759,8 @@ export class OcrVerificationService {
       uploadedAt: new Date().toISOString(),
     };
 
-    record.documentsPayload = payload;
-    const saved = await this.repo.save(record);
+    await this.persistOcrProgress(record, payload);
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
     return {
       code: HttpStatus.OK,
       message: 'Merged document uploaded successfully',
@@ -734,8 +784,7 @@ export class OcrVerificationService {
 
     record.status = 'UPLOADING';
     record.progressMessage = 'Preparing documents for identification...';
-    record.documentsPayload = payload;
-    await this.repo.save(record);
+    await this.persistOcrProgress(record, payload);
 
     this.emitProgress(record);
 
@@ -760,17 +809,16 @@ export class OcrVerificationService {
     const totalDocs = allDocs.length;
 
     // --- Phase 1: identify each document ---
-    record.status = 'OCR_PROCESSING';
-    record.progressMessage = `Identifying documents: 0 / ${totalDocs}...`;
-    record.documentsPayload = payload;
-    await this.repo.save(record);
+    await this.persistOcrProgress(record, payload, {
+      status: 'OCR_PROCESSING',
+      progressMessage: `Identifying documents: 0 / ${totalDocs}...`,
+    });
     this.emitProgress(record);
 
     let identified = 0;
     for (const doc of allDocs) {
       identified++;
-      record.progressMessage = `Identifying documents: ${identified} / ${totalDocs} — ${doc.fileName ?? doc.label}`;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload, { progressMessage: `Identifying documents: ${identified} / ${totalDocs} — ${doc.fileName ?? doc.label}` });
       this.emitProgress(record);
 
       try {
@@ -794,18 +842,37 @@ export class OcrVerificationService {
           `[OCR:PIPELINE] IDENTIFY record=${recordId} file="${doc.fileName}" mime=${resolvedMimeType ?? 'unknown'} size=${fileBuffer.length}`,
         );
 
-        const identifyRes = await this.ocrService.identifyDocument({
+        let identifyRes = await this.ocrService.identifyDocument({
           buffer: fileBuffer,
           mimetype: resolvedMimeType || undefined,
           originalname: doc.fileName ?? doc.storedFileName!,
         });
-        const mapped = this.normalizeIdentifiedType(
+        let mapped = this.normalizeIdentifiedType(
           identifyRes.data?.documentType ?? 'Other',
         );
+        const identifyConf = Number(identifyRes.data?.confidence ?? 0);
+        // One retry when first pass collapses to Other / low confidence (Gemini flake or cold start).
+        if (
+          (mapped.documentType === 'other' || identifyConf < 0.45) &&
+          fileBuffer.length > 0
+        ) {
+          this.logger.warn(
+            `[OCR:PIPELINE] IDENTIFY weak → retry record=${recordId} file="${doc.fileName}" type="${mapped.documentType}" conf=${identifyConf}`,
+          );
+          await new Promise((r) => setTimeout(r, 600));
+          identifyRes = await this.ocrService.identifyDocument({
+            buffer: fileBuffer,
+            mimetype: resolvedMimeType || undefined,
+            originalname: doc.fileName ?? doc.storedFileName!,
+          });
+          mapped = this.normalizeIdentifiedType(
+            identifyRes.data?.documentType ?? 'Other',
+          );
+        }
         doc.documentType = mapped.documentType;
         doc.label = mapped.label;
         this.logger.log(
-          `[OCR:PIPELINE] IDENTIFY OK record=${recordId} file="${doc.fileName}" → type="${mapped.documentType}" label="${mapped.label}"`,
+          `[OCR:PIPELINE] IDENTIFY OK record=${recordId} file="${doc.fileName}" → type="${mapped.documentType}" label="${mapped.label}" conf=${Number(identifyRes.data?.confidence ?? 0)}`,
         );
       } catch (err: any) {
         this.logger.error(
@@ -816,8 +883,7 @@ export class OcrVerificationService {
         doc.label = doc.fileName || 'Other Document';
       }
 
-      record.documentsPayload = payload;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload);
     }
 
     // --- Phase 2: fetch RCU triggers for identified types ---
@@ -834,15 +900,13 @@ export class OcrVerificationService {
     };
     const bundles: DocTriggerBundle[] = [];
 
-    record.progressMessage = `Fetching triggers: 0 / ${totalDocs}...`;
-    await this.repo.save(record);
+    await this.persistOcrProgress(record, payload, { progressMessage: `Fetching triggers: 0 / ${totalDocs}...` });
     this.emitProgress(record);
 
     let fetched = 0;
     for (const doc of allDocs) {
       fetched++;
-      record.progressMessage = `Fetching triggers: ${fetched} / ${totalDocs} — ${doc.label}`;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload, { progressMessage: `Fetching triggers: ${fetched} / ${totalDocs} — ${doc.label}` });
       this.emitProgress(record);
 
       const rcuMatch = await this.rcuTriggersService.findOcrTriggersForDocumentType(
@@ -866,13 +930,11 @@ export class OcrVerificationService {
         matchedLabel: rcuMatch.matchedLabel,
       });
 
-      record.documentsPayload = payload;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload);
     }
 
     // --- Phase 3: generate OCR prompt + run verification with triggers + forensics ---
-    record.progressMessage = `Running OCR + forensics: 0 / ${totalDocs}...`;
-    await this.repo.save(record);
+    await this.persistOcrProgress(record, payload, { progressMessage: `Running OCR + forensics: 0 / ${totalDocs}...` });
     this.emitProgress(record);
 
     let processed = 0;
@@ -882,11 +944,12 @@ export class OcrVerificationService {
       const doc = bundle.doc;
       processed++;
       const triggerCount = bundle.triggers.length;
-      record.progressMessage =
-        triggerCount > 0
-          ? `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label} (${triggerCount} triggers)`
-          : `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label}`;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload, {
+        progressMessage:
+          triggerCount > 0
+            ? `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label} (${triggerCount} triggers)`
+            : `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label}`,
+      });
       this.emitProgress(record);
 
       try {
@@ -908,8 +971,7 @@ export class OcrVerificationService {
           doc.ocrError = 'Unsupported file type for OCR. Use PDF, JPG, JPEG, PNG, or WEBP.';
           doc.ocrSuccess = false;
           hasFailure = true;
-          record.documentsPayload = payload;
-          await this.repo.save(record);
+          await this.persistOcrProgress(record, payload);
           this.logger.warn(`OCR skipped for "${doc.label}" (${doc.key}): unsupported file type`);
           continue;
         }
@@ -987,13 +1049,11 @@ export class OcrVerificationService {
         );
       }
 
-      record.documentsPayload = payload;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload);
     }
 
     // --- Phase 4: fuse case-level forensic verdict ---
-    record.progressMessage = 'Fusing forensic score & verdict...';
-    await this.repo.save(record);
+    await this.persistOcrProgress(record, payload, { progressMessage: 'Fusing forensic score & verdict...' });
     this.emitProgress(record);
 
     payload.caseForensicSummary = this.fuseCaseForensicSummary(allDocs);
@@ -1002,8 +1062,7 @@ export class OcrVerificationService {
     const successfulDocs = allDocs.filter((d) => d.ocrSuccess && d.extractedData);
     if (successfulDocs.length > 0) {
       record.progressMessage = 'Scraping public sites from extracted OCR data...';
-      record.documentsPayload = payload;
-      await this.repo.save(record);
+      await this.persistOcrProgress(record, payload);
       this.emitProgress(record);
 
       try {
@@ -1047,18 +1106,23 @@ export class OcrVerificationService {
 
     const failedDocs = allDocs.filter((d) => d.storedFileName && !d.ocrSuccess);
     const failedNames = failedDocs.map((d) => d.label).join(', ');
-    record.status = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
     const caseVerdict = payload.caseForensicSummary?.verdictLabel;
     const caseScore = payload.caseForensicSummary?.riskScore;
-    const scrapeOk = !!record.scrapePayload?.pipeline?.success;
-    record.progressMessage = hasFailure
+    const scrapeEntries = Object.entries(record.scrapePayload ?? {}).filter(
+      ([k, v]) => k !== 'pipeline' && !!v,
+    );
+    const scrapeOk = scrapeEntries.some(([, v]) => !!(v as { success?: boolean })?.success);
+    const finalStatus = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
+    const finalMessage = hasFailure
       ? `Failed: ${failedNames}`
       : caseVerdict
         ? `Report generated — ${caseVerdict} (risk ${caseScore}/100)${scrapeOk ? ' · scrapes done' : ''}`
         : 'Report generated successfully';
-    record.reportGeneratedAt = hasFailure ? null : new Date();
-    record.documentsPayload = payload;
-    await this.repo.save(record);
+    await this.persistOcrProgress(record, payload, {
+      status: finalStatus,
+      progressMessage: finalMessage,
+      reportGeneratedAt: hasFailure ? null : new Date(),
+    });
     this.emitProgress(record);
   }
 

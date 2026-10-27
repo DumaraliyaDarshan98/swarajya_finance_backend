@@ -27,7 +27,7 @@ export class PhysicalVerification {
   @ManyToOne(() => Client, { nullable: false })
   client: Client;
 
-  @Column({ name: 'client_id', type: 'uuid' })
+  @Column({ name: 'client_id', type: 'varchar', length: 36 })
   @Index()
   clientId: string;
 
@@ -72,7 +72,7 @@ export class PhysicalVerification {
   @Index()
   agreementNumber: string | null;
 
-  @Column({ name: 'customer_name', type: 'varchar', length: 255, nullable: true })
+  @Column({ name: 'customer_name', type: 'varchar', length: 191, nullable: true })
   @Index()
   customerName: string | null;
 
@@ -85,11 +85,11 @@ export class PhysicalVerification {
   @Column({ name: 'city', type: 'varchar', length: 100, nullable: true })
   city: string | null;
 
-  @Column({ name: 'assigned_field_agent_user_id', type: 'uuid', nullable: true })
+  @Column({ name: 'assigned_field_agent_user_id', type: 'varchar', length: 36, nullable: true })
   @Index()
   assignedFieldAgentUserId: string | null;
 
-  @Column({ name: 'assigned_field_agent_name', type: 'varchar', length: 255, nullable: true })
+  @Column({ name: 'assigned_field_agent_name', type: 'varchar', length: 191, nullable: true })
   assignedFieldAgentName: string | null;
 
   @Column({ name: 'assigned_at', type: 'timestamp', nullable: true })

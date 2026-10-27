@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -14,15 +15,22 @@ import { Role } from '../../../common/enums/role.enum';
 import type { DigitalVerificationStatus } from '../interfaces/scrape-payload.interface';
 import { normalizeDomain } from '../helpers/business-verification.helper';
 import { VerificationEnrichmentService } from '../../verification-enrichment/services/verification-enrichment.service';
+import { NotificationService } from '../../notification/services/notification.service';
+import { User } from '../../user/entities/user.entity';
 
-type AuthedUser = { role: Role; clientId?: string };
+type AuthedUser = { sub?: string; role: Role; clientId?: string };
 
 @Injectable()
 export class DigitalVerificationService {
+  private readonly logger = new Logger(DigitalVerificationService.name);
+
   constructor(
     @InjectRepository(DigitalVerification)
     private repo: Repository<DigitalVerification>,
+    @InjectRepository(User)
+    private userRepo: Repository<User>,
     private enrichment: VerificationEnrichmentService,
+    private notificationService: NotificationService,
   ) {}
 
   private normalizeOptional(value?: string | null): string | null {
@@ -256,6 +264,10 @@ export class DigitalVerificationService {
     };
   }
 
+  /**
+   * Fire-and-forget: GST / who.is / address scrapes run in background.
+   * Returns immediately so client-admin is not blocked by Puppeteer.
+   */
   async generateReport(
     id: string,
     user: AuthedUser,
@@ -263,48 +275,178 @@ export class DigitalVerificationService {
     const record = await this.findOwned(id, user);
 
     record.status = 'IN_PROGRESS';
+    record.reportGeneratedAt = null;
     await this.repo.save(record);
 
-    // 1) Entered form details → 2) scrape → 3) cascade other sites from scrape → report
-    const { scrapePayload, hasFailure } = await this.enrichment.enrichFromDetails({
-      applicantName: record.applicantName,
-      mobileNumber: record.mobileNumber,
-      emailId: record.emailId,
-      panNumber: record.panNumber,
-      aadhaarNumber: record.aadhaarNumber,
-      companyName: record.hasBusinessAddress ? record.companyName : null,
-      companyDomain: record.hasBusinessAddress ? record.companyDomain : null,
-      gstNumber: record.hasBusinessAddress ? record.gstNumber : null,
-      businessPan: record.hasBusinessAddress ? record.businessPan : null,
-      residential: {
-        address: record.residentialAddress,
-        landmark: record.residentialLandmark,
-        city: record.residentialCity,
-        state: record.residentialState,
-        pincode: record.residentialPincode,
-      },
-      office: record.hasOfficeAddress
-        ? {
-            address: record.officeAddress,
-            landmark: record.officeLandmark,
-            city: record.officeCity,
-            state: record.officeState,
-            pincode: record.officePincode,
-          }
-        : null,
-    });
+    this.processDigitalInBackground(record.id, user.sub).catch((err) =>
+      this.logger.error(
+        `Background digital report failed for ${record.id}`,
+        err instanceof Error ? err.stack : String(err),
+      ),
+    );
 
-    record.scrapePayload = scrapePayload;
-    record.status = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
-    record.reportGeneratedAt = hasFailure ? null : new Date();
-
-    const saved = await this.repo.save(record);
     return {
       code: HttpStatus.OK,
-      message: hasFailure
-        ? 'Report generation failed during business verification'
-        : 'Digital verification report generated successfully',
-      data: saved,
+      message:
+        'Report generation started. GST, WHOIS, address, and related sites are checked in the background ? track status on the listing page.',
+      data: record,
     };
+  }
+
+  private async processDigitalInBackground(
+    recordId: string,
+    requestedByUserId?: string,
+  ): Promise<void> {
+    const record = await this.repo.findOne({ where: { id: recordId } });
+    if (!record) return;
+
+    this.logger.log(
+      `[DIGITAL] background scrape start id=${recordId} domain=${record.companyDomain ?? '-'} gst=${record.gstNumber ?? '-'}`,
+    );
+
+    try {
+      const { scrapePayload, hasFailure, cascadeNotes } =
+        await this.enrichment.enrichFromDetails({
+          applicantName: record.applicantName,
+          mobileNumber: record.mobileNumber,
+          emailId: record.emailId,
+          panNumber: record.panNumber,
+          aadhaarNumber: record.aadhaarNumber,
+          companyName: record.hasBusinessAddress ? record.companyName : null,
+          companyDomain: record.hasBusinessAddress ? record.companyDomain : null,
+          gstNumber: record.hasBusinessAddress ? record.gstNumber : null,
+          businessPan: record.hasBusinessAddress ? record.businessPan : null,
+          residential: {
+            address: record.residentialAddress,
+            landmark: record.residentialLandmark,
+            city: record.residentialCity,
+            state: record.residentialState,
+            pincode: record.residentialPincode,
+          },
+          office: record.hasOfficeAddress
+            ? {
+                address: record.officeAddress,
+                landmark: record.officeLandmark,
+                city: record.officeCity,
+                state: record.officeState,
+                pincode: record.officePincode,
+              }
+            : null,
+        });
+
+      // Always generate the report once the scrape pipeline finishes.
+      // Per-site failures stay on scrapePayload for the UI; they must not mark the case FAILED.
+      record.scrapePayload = scrapePayload;
+      record.status = 'REPORT_GENERATED';
+      record.reportGeneratedAt = new Date();
+      await this.repo.save(record);
+
+      this.logger.log(
+        `[DIGITAL] background scrape done id=${recordId} status=${record.status} partial=${hasFailure} domainSource=${scrapePayload?.domain?.source ?? '-'} domainOk=${scrapePayload?.domain?.success ?? false} notes=${cascadeNotes.join(' | ') || 'none'}`,
+      );
+
+      await this.notifyDigitalReportReady(record, requestedByUserId);
+    } catch (err) {
+      record.status = 'FAILED';
+      record.reportGeneratedAt = null;
+      await this.repo.save(record).catch(() => undefined);
+      this.logger.error(
+        `[DIGITAL] background scrape error id=${recordId}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      await this.notifyDigitalReportReady(record, requestedByUserId).catch(
+        () => undefined,
+      );
+      throw err;
+    }
+  }
+
+  private async notifyDigitalReportReady(
+    record: DigitalVerification,
+    requestedByUserId?: string,
+  ): Promise<void> {
+    if (!record.clientId) return;
+
+    const frontendUrl = (
+      process.env.FRONTEND_URL ||
+      process.env.APP_FRONTEND_URL ||
+      'http://localhost:4200'
+    ).replace(/\/$/, '');
+
+    const isSuccess = record.status === 'REPORT_GENERATED';
+    const partial =
+      isSuccess && record.scrapePayload?.pipeline?.success === false;
+    const ctaUrl = `${frontendUrl}/client-admin/digital-report/${record.id}`;
+    const applicant = record.applicantName?.trim() || 'applicant';
+    const loanRef = record.loanApplicationNo?.trim();
+    const subject = isSuccess
+      ? partial
+        ? 'Digital verification report generated (partial scrapes)'
+        : 'Digital verification report generated'
+      : 'Digital verification report failed';
+    const messageText = isSuccess
+      ? `Digital report generated for ${applicant}${loanRef ? ` (${loanRef})` : ''}. ID: ${record.id}${
+          partial
+            ? ' Some public-site checks did not complete ? open the report for details.'
+            : ''
+        }`
+      : `Digital report generation failed for ${applicant}${loanRef ? ` (${loanRef})` : ''}. ID: ${record.id}. Open the case to review errors.`;
+
+    const recipients = await this.userRepo.find({
+      where: {
+        role: Role.CLIENT_ADMIN,
+        client: { id: record.clientId } as any,
+      },
+    });
+
+    const seen = new Set<string>();
+    for (const admin of recipients) {
+      if (!admin?.id || seen.has(admin.id)) continue;
+      seen.add(admin.id);
+      await this.notificationService
+        .sendSystemNotification({
+          userId: admin.id,
+          toEmail: admin.email,
+          subject,
+          title: subject,
+          messageText,
+          icon: isSuccess ? 'success' : 'warning',
+          ctaUrl,
+          ctaLabel: 'Open digital report',
+        })
+        .catch((e) =>
+          this.logger.warn(
+            `Notify CLIENT_ADMIN ${admin.id} failed: ${e?.message ?? e}`,
+          ),
+        );
+    }
+
+    if (requestedByUserId && !seen.has(requestedByUserId)) {
+      const requester = await this.userRepo.findOne({
+        where: { id: requestedByUserId },
+      });
+      if (
+        requester &&
+        (requester.role === Role.CLIENT_USER ||
+          requester.role === Role.CLIENT_ADMIN)
+      ) {
+        await this.notificationService
+          .sendSystemNotification({
+            userId: requester.id,
+            toEmail: requester.email,
+            subject,
+            title: subject,
+            messageText,
+            icon: isSuccess ? 'success' : 'warning',
+            ctaUrl,
+            ctaLabel: 'Open digital report',
+          })
+          .catch((e) =>
+            this.logger.warn(
+              `Notify requester ${requester.id} failed: ${e?.message ?? e}`,
+            ),
+          );
+      }
+    }
   }
 }

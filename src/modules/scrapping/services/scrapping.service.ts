@@ -856,21 +856,241 @@ export class ScrappingService {
     };
   }
 
+  /**
+   * Domain WHOIS: prefer https://who.is/whois/{domain}, fall back to whois.com.
+   */
   async whoisSearch(domainInput: string): Promise<APIResponseInterface<WhoisScrapeResult>> {
     const domain = this.normalizeDomain(domainInput);
     if (!domain) {
       throw new BadRequestException('Domain is required');
     }
 
-    const baseUrl = 'https://www.whois.com/whois/';
-    const url = `${baseUrl}${encodeURIComponent(domain)}`;
-
     const browser = await this.launchBrowser();
     try {
-      const page = await browser.newPage();
-      page.setDefaultNavigationTimeout(45_000);
-      page.setDefaultTimeout(20_000);
+      try {
+        const whoIs = await this.scrapeWhoIs(browser, domain);
+        if (Object.keys(whoIs.fields).length > 0) {
+          return {
+            code: HttpStatus.OK,
+            message: 'WHOIS details fetched successfully from who.is',
+            data: whoIs,
+          };
+        }
+      } catch (whoIsErr: any) {
+        console.warn(
+          `[WHOIS] who.is failed for ${domain}: ${whoIsErr?.message ?? whoIsErr}`,
+        );
+      }
 
+      const whoisCom = await this.scrapeWhoisCom(browser, domain);
+      return {
+        code: HttpStatus.OK,
+        message: 'WHOIS details fetched successfully from whois.com',
+        data: whoisCom,
+      };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  /** Canonical aliases so digital report helpers resolve dates/registrar consistently. */
+  private aliasWhoisFields(fields: Record<string, string>): Record<string, string> {
+    const out = { ...fields };
+    const lower = new Map(
+      Object.entries(fields).map(([k, v]) => [k.toLowerCase(), v] as const),
+    );
+    const pick = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = lower.get(k.toLowerCase());
+        if (v) return v;
+      }
+      return null;
+    };
+    const setIf = (key: string, value: string | null) => {
+      if (value && !out[key]) out[key] = value;
+    };
+    setIf('Registrar', pick('Registrar', 'Registrar Name', 'Sponsoring Registrar'));
+    setIf(
+      'Creation Date',
+      pick('Creation Date', 'Created', 'Created On', 'Registered On', 'Domain Registration Date'),
+    );
+    setIf('Registered On', pick('Registered On', 'Creation Date', 'Created', 'Created On'));
+    setIf(
+      'Registry Expiry Date',
+      pick('Registry Expiry Date', 'Expires', 'Expires On', 'Expiry Date', 'Registrar Registration Expiration Date'),
+    );
+    setIf('Expires On', pick('Expires On', 'Expires', 'Registry Expiry Date', 'Expiry Date'));
+    setIf('Updated Date', pick('Updated Date', 'Updated', 'Last Updated'));
+    setIf(
+      'Name Server',
+      pick('Name Server', 'Nameservers', 'Name Servers', 'Nserver'),
+    );
+    setIf('Domain Status', pick('Domain Status', 'Status'));
+    setIf('Registrant Organization', pick('Registrant Organization', 'Organization', 'Org'));
+    setIf('IP Address', pick('IP Address', 'IP'));
+    return out;
+  }
+
+  private async scrapeWhoIs(
+    browser: Browser,
+    domain: string,
+  ): Promise<WhoisScrapeResult> {
+    const url = `https://who.is/whois/${encodeURIComponent(domain)}`;
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(45_000);
+    page.setDefaultTimeout(25_000);
+    try {
+      await page.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      );
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await new Promise((r) => setTimeout(r, 1_200));
+
+      const extracted = await page.evaluate(() => {
+        const result: Record<string, string> = {};
+        const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+        const addPair = (key: string, value: string) => {
+          const k = clean(key).replace(/:$/, '');
+          const v = clean(value);
+          if (!k || !v) return;
+          if (/security check|information blocked|captcha/i.test(k)) return;
+          if (/information blocked/i.test(v)) return;
+          result[k] = v;
+        };
+
+        const bodyText = document.body?.innerText ?? '';
+        if (/information blocked/i.test(bodyText) && bodyText.length < 800) {
+          return { blocked: true, fields: {} as Record<string, string> };
+        }
+
+        // who.is section cards: label above value
+        document.querySelectorAll('h2, h3, h4').forEach((heading) => {
+          const title = clean(heading.textContent ?? '');
+          if (!/registrar|important dates|nameserver|domain status|contact/i.test(title)) {
+            return;
+          }
+          let el = heading.nextElementSibling;
+          let hops = 0;
+          while (el && hops < 8) {
+            const rows = el.querySelectorAll(
+              '.row, .queryResponseBodyRow, li, p, div',
+            );
+            if (rows.length) {
+              rows.forEach((row) => {
+                const strong = row.querySelector('strong, b, .key, .label, dt');
+                if (strong) {
+                  const label = strong.textContent ?? '';
+                  const value = clean(
+                    (row.textContent ?? '').replace(label, ''),
+                  );
+                  addPair(label, value);
+                }
+              });
+            }
+            el = el.nextElementSibling;
+            hops += 1;
+          }
+        });
+
+        document.querySelectorAll('dl').forEach((dl) => {
+          dl.querySelectorAll('dt').forEach((dt) => {
+            const dd = dt.nextElementSibling;
+            if (dd?.tagName === 'DD') {
+              addPair(dt.textContent ?? '', dd.textContent ?? '');
+            }
+          });
+        });
+
+        document.querySelectorAll('table tr').forEach((tr) => {
+          const cells = Array.from(tr.querySelectorAll('th, td')).map((c) =>
+            clean(c.textContent ?? ''),
+          );
+          if (cells.length >= 2 && cells[0] && cells[1]) {
+            addPair(cells[0], cells[1]);
+          }
+        });
+
+        // Explicit who.is labels often appear as standalone lines
+        const labelValuePatterns: Array<[RegExp, string]> = [
+          [/Registrar\s*\n+\s*(.+)/i, 'Registrar'],
+          [/WHOIS Server\s*\n+\s*(.+)/i, 'WHOIS Server'],
+          [/Referral URL\s*\n+\s*(.+)/i, 'Referral URL'],
+          [/Created\s*\n+\s*(.+)/i, 'Created'],
+          [/Updated\s*\n+\s*(.+)/i, 'Updated'],
+          [/Expires\s*\n+\s*(.+)/i, 'Expires'],
+          [/IP Address:\s*(.+)/i, 'IP Address'],
+        ];
+        for (const [re, key] of labelValuePatterns) {
+          const m = bodyText.match(re);
+          if (m?.[1]) addPair(key, m[1].split('\n')[0] ?? m[1]);
+        }
+
+        // Nameserver hostnames from table
+        const nsHosts: string[] = [];
+        document.querySelectorAll('table tr').forEach((tr) => {
+          const tds = Array.from(tr.querySelectorAll('td')).map((c) =>
+            clean(c.textContent ?? ''),
+          );
+          if (tds[0] && /\./.test(tds[0]) && !/hostname/i.test(tds[0])) {
+            nsHosts.push(tds[0]);
+          }
+        });
+        if (nsHosts.length) {
+          addPair('Nameservers', nsHosts.join(', '));
+        }
+
+        const statuses = Array.from(
+          document.querySelectorAll('li, .domain-status, .status'),
+        )
+          .map((n) => clean(n.textContent ?? ''))
+          .filter((t) => /prohibited|ok|client|server/i.test(t) && t.length < 120);
+        if (statuses.length) {
+          addPair('Domain Status', [...new Set(statuses)].slice(0, 8).join('; '));
+        }
+
+        return { blocked: false, fields: result };
+      });
+
+      if (extracted.blocked) {
+        throw new ServiceUnavailableException(
+          'who.is blocked WHOIS access for this domain',
+        );
+      }
+
+      const normalizedFields: Record<string, string> = {};
+      for (const [k, v] of Object.entries(extracted.fields ?? {})) {
+        const nk = this.normalizeText(k);
+        const nv = this.normalizeText(v);
+        if (nk && nv) normalizedFields[nk] = nv;
+      }
+
+      const fields = this.aliasWhoisFields(normalizedFields);
+      if (Object.keys(fields).length === 0) {
+        throw new ServiceUnavailableException(
+          'who.is returned no WHOIS fields for this domain',
+        );
+      }
+
+      return {
+        domain,
+        sourceUrl: url,
+        extractedAt: new Date().toISOString(),
+        fields,
+      };
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  private async scrapeWhoisCom(
+    browser: Browser,
+    domain: string,
+  ): Promise<WhoisScrapeResult> {
+    const url = `https://www.whois.com/whois/${encodeURIComponent(domain)}`;
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(45_000);
+    page.setDefaultTimeout(20_000);
+    try {
       await page.goto(url, { waitUntil: 'domcontentloaded' });
 
       const resultsSelector = '.df-block, .df-row, #lookup-results, .whois-data';
@@ -978,25 +1198,189 @@ export class ScrappingService {
         if (nk && nv) normalizedFields[nk] = nv;
       }
 
-      if (Object.keys(normalizedFields).length === 0) {
+      const aliased = this.aliasWhoisFields(normalizedFields);
+      if (Object.keys(aliased).length === 0) {
         throw new ServiceUnavailableException(
           'WHOIS lookup returned no data for this domain',
         );
       }
 
       return {
-        code: HttpStatus.OK,
-        message: 'WHOIS details fetched successfully',
-        data: {
-          domain,
-          sourceUrl: url,
-          extractedAt: new Date().toISOString(),
-          fields: normalizedFields,
-        },
+        domain,
+        sourceUrl: url,
+        extractedAt: new Date().toISOString(),
+        fields: aliased,
       };
     } finally {
-      await browser.close().catch(() => undefined);
+      await page.close().catch(() => undefined);
     }
+  }
+
+  /**
+   * Probe one public/gov portal URL for reachability (used by digital + OCR enrichment).
+   * Does not attempt captcha-protected form submissions — records HTTP availability + page title.
+   */
+  async checkPortalSite(
+    url: string,
+    options?: { timeoutMs?: number },
+  ): Promise<{
+    url: string;
+    finalUrl: string;
+    success: boolean;
+    httpStatus: number | null;
+    title: string | null;
+    durationMs: number;
+    error?: string;
+    checkedAt: string;
+  }> {
+    const timeoutMs = options?.timeoutMs ?? 10_000;
+    const started = Date.now();
+    const checkedAt = new Date().toISOString();
+    const target = String(url || '').trim();
+    if (!target || !/^https?:\/\//i.test(target)) {
+      return {
+        url: target,
+        finalUrl: target,
+        success: false,
+        httpStatus: null,
+        title: null,
+        durationMs: 0,
+        error: 'Invalid or missing URL',
+        checkedAt,
+      };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(target, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-IN,en;q=0.9',
+        },
+      });
+
+      const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+      let title: string | null = null;
+      if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+        const text = await res.text();
+        const slice = text.slice(0, 80_000);
+        const m = slice.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        title = m?.[1] ? this.normalizeText(m[1]).slice(0, 200) : null;
+      } else {
+        // Drain body for non-HTML so sockets close cleanly
+        await res.arrayBuffer().catch(() => undefined);
+      }
+
+      const ok = res.status >= 200 && res.status < 400;
+      return {
+        url: target,
+        finalUrl: res.url || target,
+        success: ok,
+        httpStatus: res.status,
+        title,
+        durationMs: Date.now() - started,
+        error: ok ? undefined : `HTTP ${res.status}`,
+        checkedAt,
+      };
+    } catch (err: any) {
+      const aborted = err?.name === 'AbortError';
+      return {
+        url: target,
+        finalUrl: target,
+        success: false,
+        httpStatus: null,
+        title: null,
+        durationMs: Date.now() - started,
+        error: aborted
+          ? `Timeout after ${timeoutMs}ms`
+          : err?.message ?? 'Portal check failed',
+        checkedAt,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Check portal sites one-by-one (sequential) so report generation probes each listed URL.
+   */
+  async checkPortalSitesSequentially(
+    portals: Array<{
+      id?: string;
+      title: string;
+      state?: string;
+      url: string;
+      categoryName?: string;
+      categoryKey?: string;
+      relevant?: boolean;
+    }>,
+    options?: { timeoutMs?: number; onProgress?: (done: number, total: number, title: string) => void },
+  ): Promise<
+    Array<{
+      id?: string;
+      title: string;
+      state?: string;
+      url: string;
+      categoryName?: string;
+      categoryKey?: string;
+      relevant: boolean;
+      success: boolean;
+      httpStatus: number | null;
+      titleTag: string | null;
+      finalUrl: string;
+      durationMs: number;
+      error?: string;
+      checkedAt: string;
+    }>
+  > {
+    const results: Array<{
+      id?: string;
+      title: string;
+      state?: string;
+      url: string;
+      categoryName?: string;
+      categoryKey?: string;
+      relevant: boolean;
+      success: boolean;
+      httpStatus: number | null;
+      titleTag: string | null;
+      finalUrl: string;
+      durationMs: number;
+      error?: string;
+      checkedAt: string;
+    }> = [];
+
+    const list = portals.filter((p) => !!String(p.url || '').trim());
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      options?.onProgress?.(i + 1, list.length, p.title);
+      const check = await this.checkPortalSite(p.url, {
+        timeoutMs: options?.timeoutMs,
+      });
+      results.push({
+        id: p.id,
+        title: p.title,
+        state: p.state,
+        url: p.url,
+        categoryName: p.categoryName,
+        categoryKey: p.categoryKey,
+        relevant: p.relevant !== false,
+        success: check.success,
+        httpStatus: check.httpStatus,
+        titleTag: check.title,
+        finalUrl: check.finalUrl,
+        durationMs: check.durationMs,
+        error: check.error,
+        checkedAt: check.checkedAt,
+      });
+    }
+    return results;
   }
 }
 
