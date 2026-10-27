@@ -35,9 +35,12 @@ type UploadedFileLike = {
 @Injectable()
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
+  // private readonly ocrBaseUrl = (
+  //   process.env.OCR_SERVICE_URL || 'https://ocr.swarajyarac.com' || 'http://localhost:3300'
+  // ).replace(/\/$/, '');
 
   private readonly ocrBaseUrl = (
-    process.env.OCR_SERVICE_URL || 'http://localhost:3300'
+    process.env.OCR_SERVICE_URL || 'https://ocr.swarajyarac.com'
   ).replace(/\/$/, '');
 
   private readonly apiKey = String(process.env.OCR_SERVICE_API_KEY || '').trim();
