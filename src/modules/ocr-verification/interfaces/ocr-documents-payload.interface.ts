@@ -49,6 +49,36 @@ export interface OcrForensicSummary {
   failedTriggerCount: number;
 }
 
+/** Banking-grade per-document validation (identify ≠ extract ≠ validate ≠ authenticity). */
+export type OcrDocumentValidationStatus =
+  | 'VALID'
+  | 'NEEDS_REVIEW'
+  | 'INVALID'
+  | 'PROCESSING_FAILED';
+
+export interface OcrFieldValidationResult {
+  field: string;
+  status: 'passed' | 'failed' | 'missing' | 'skipped' | 'low_confidence';
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  valuePreview?: string | null;
+}
+
+export interface OcrDocumentValidationReport {
+  status: OcrDocumentValidationStatus;
+  statusLabel: string;
+  reasons: string[];
+  fieldResults: OcrFieldValidationResult[];
+  identification: {
+    documentType: string;
+    confidence: number;
+    accepted: boolean;
+    uncertain: boolean;
+  };
+  authenticityNote: string;
+  trace?: Record<string, unknown>;
+}
+
 export interface OcrDocumentEntry {
   key: string;
   label: string;
@@ -66,6 +96,13 @@ export interface OcrDocumentEntry {
   ocrSuccess: boolean;
   ocrError: string | null;
   uploadedAt: string | null;
+  /** Banking validation status — never treat OCR text as authenticity. */
+  validationStatus?: OcrDocumentValidationStatus | null;
+  validationStatusLabel?: string | null;
+  validationReport?: OcrDocumentValidationReport | null;
+  identifyConfidence?: number | null;
+  identificationAccepted?: boolean | null;
+  identificationUncertain?: boolean | null;
   /** Phase-1 forensics */
   fileHash?: string | null;
   fileSizeBytes?: number | null;

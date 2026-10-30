@@ -27,6 +27,23 @@ export interface ScrapeInput {
   } | null;
 }
 
+/** Optional controls for OCR vs digital enrichment (backward-compatible). */
+export interface EnrichmentOptions {
+  /** Identified OCR document types — used to filter portal catalog. */
+  documentTypes?: string[];
+  /**
+   * `ocr` → filter portals by document type, concurrent checks, record executedScrapes.
+   * `digital` (default) → existing full digital-report catalog behavior.
+   */
+  mode?: 'digital' | 'ocr';
+  /** Max portal reachability probes (OCR default 12). */
+  maxPortalChecks?: number;
+  /** Portal HTTP timeout ms (OCR default 6000). */
+  portalTimeoutMs?: number;
+  /** Concurrent portal probes (OCR default 5). */
+  portalConcurrency?: number;
+}
+
 export interface EnrichmentResult {
   scrapePayload: ScrapePayload;
   /**

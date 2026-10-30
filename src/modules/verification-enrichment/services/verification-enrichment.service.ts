@@ -17,7 +17,14 @@ import {
 import {
   cascadeHintsFromGstFields,
 } from '../helpers/extract-scrape-input.helper';
+import {
+  categoriesFromScrapeFields,
+  isCategoryAllowedForOcr,
+  portalCategoriesForDocumentTypes,
+  type ExecutedScrapeApi,
+} from '../helpers/portal-document-type.helper';
 import type {
+  EnrichmentOptions,
   EnrichmentResult,
   ScrapeInput,
 } from '../interfaces/scrape-input.interface';
@@ -57,11 +64,20 @@ export class VerificationEnrichmentService {
    * 3) Portal catalog of related government / public sites
    *
    * Individual scrape failures are recorded on the payload; they do not abort the pipeline.
+   * Pass `options.mode = 'ocr'` + `documentTypes` to filter portals and speed up OCR cases.
    */
-  async enrichFromDetails(input: ScrapeInput): Promise<EnrichmentResult> {
+  async enrichFromDetails(
+    input: ScrapeInput,
+    options?: EnrichmentOptions,
+  ): Promise<EnrichmentResult> {
     const scrapePayload: ScrapePayload = {};
     const cascadeNotes: string[] = [];
     const softFailures: string[] = [];
+    const executedScrapes: ExecutedScrapeApi[] = [];
+    const isOcrMode = options?.mode === 'ocr';
+    const documentTypes = (options?.documentTypes ?? [])
+      .map((t) => String(t || '').trim())
+      .filter(Boolean);
 
     const residential = input.residential;
     const office = input.office;
@@ -132,6 +148,7 @@ export class VerificationEnrichmentService {
     if (gstNumber) {
       primaryTasks.push(
         (async () => {
+          const started = Date.now();
           try {
             const res = await this.scrappingService.gstSearch(gstNumber);
             scrapePayload.gst = {
@@ -141,6 +158,15 @@ export class VerificationEnrichmentService {
               data: res.data as unknown as Record<string, unknown>,
             };
             cascadeNotes.push(`GST scraped for ${gstNumber}`);
+            executedScrapes.push({
+              api: 'POST /scrapping/gst-search',
+              name: 'GST Search',
+              source: 'knowyourgst',
+              success: true,
+              scrapedAt: scrapePayload.gst.scrapedAt,
+              durationMs: Date.now() - started,
+              documentTypes,
+            });
           } catch (error: any) {
             softFailures.push('gst');
             scrapePayload.gst = {
@@ -150,6 +176,16 @@ export class VerificationEnrichmentService {
               error: error?.message ?? 'GST verification failed',
             };
             cascadeNotes.push(`GST scrape failed for ${gstNumber}`);
+            executedScrapes.push({
+              api: 'POST /scrapping/gst-search',
+              name: 'GST Search',
+              source: 'knowyourgst',
+              success: false,
+              scrapedAt: scrapePayload.gst.scrapedAt,
+              error: scrapePayload.gst.error,
+              durationMs: Date.now() - started,
+              documentTypes,
+            });
           }
         })(),
       );
@@ -234,7 +270,7 @@ export class VerificationEnrichmentService {
       }
     }
 
-    // Portal catalog + one-by-one reachability check for each relevant site
+    // Portal catalog + reachability checks (OCR: type-filtered + concurrent)
     try {
       const catalog = await this.portalListService.getDigitalReportCatalog();
       const stateHint =
@@ -244,17 +280,34 @@ export class VerificationEnrichmentService {
         (scrapePayload.gstDerivedAddress?.data as any)?.pincodeFields?.State ||
         null;
 
-      const categories = catalog.categories.map((cat) => ({
-        ...cat,
-        portals: (cat.portals || []).map((p) => ({
-          ...p,
-          relevant: this.isPortalRelevant(p.state, stateHint),
-        })),
-      }));
+      let allowedCategories = portalCategoriesForDocumentTypes(documentTypes);
+      if (isOcrMode) {
+        const fromFields = categoriesFromScrapeFields({
+          panNumber: input.panNumber,
+          aadhaarNumber: input.aadhaarNumber,
+          gstNumber: input.gstNumber,
+          companyDomain,
+        }).map((c) => c.toLowerCase());
+        if (fromFields.length) {
+          allowedCategories = [
+            ...new Set([...(allowedCategories ?? []), ...fromFields]),
+          ];
+        }
+      }
 
-      // Prefer state-matched + Pan India; still probe every flagged digital-report portal
-      // that is relevant, one site at a time.
-      const flatPortals = categories.flatMap((cat) =>
+      const categories = catalog.categories
+        .filter((cat) =>
+          isCategoryAllowedForOcr(cat.name, cat.key, allowedCategories),
+        )
+        .map((cat) => ({
+          ...cat,
+          portals: (cat.portals || []).map((p) => ({
+            ...p,
+            relevant: this.isPortalRelevant(p.state, stateHint),
+          })),
+        }));
+
+      let flatPortals = categories.flatMap((cat) =>
         (cat.portals || [])
           .filter((p) => p.relevant && !!String(p.url || '').trim())
           .map((p) => ({
@@ -268,14 +321,32 @@ export class VerificationEnrichmentService {
           })),
       );
 
+      const maxChecks = isOcrMode
+        ? Math.max(1, options?.maxPortalChecks ?? 12)
+        : flatPortals.length;
+      if (flatPortals.length > maxChecks) {
+        cascadeNotes.push(
+          `Portal list capped ${flatPortals.length} → ${maxChecks} for OCR speed`,
+        );
+        flatPortals = flatPortals.slice(0, maxChecks);
+      }
+
+      const concurrency = isOcrMode
+        ? Math.max(1, options?.portalConcurrency ?? 5)
+        : 1;
+      const timeoutMs = isOcrMode
+        ? Math.max(2000, options?.portalTimeoutMs ?? 6000)
+        : 10_000;
+
       this.logger.log(
-        `Portal site checks starting count=${flatPortals.length} stateHint=${stateHint || '-'}`,
+        `Portal site checks starting count=${flatPortals.length} concurrency=${concurrency} mode=${isOcrMode ? 'ocr' : 'digital'} stateHint=${stateHint || '-'} types=${documentTypes.join(',') || '-'}`,
       );
 
       const siteChecks = await this.scrappingService.checkPortalSitesSequentially(
         flatPortals,
         {
-          timeoutMs: 10_000,
+          timeoutMs,
+          concurrency,
           onProgress: (done, total, title) => {
             if (done === 1 || done === total || done % 5 === 0) {
               this.logger.log(
@@ -288,6 +359,20 @@ export class VerificationEnrichmentService {
 
       const okCount = siteChecks.filter((s) => s.success).length;
       const failCount = siteChecks.length - okCount;
+
+      for (const s of siteChecks) {
+        executedScrapes.push({
+          api: 'GET portal-check',
+          name: s.title,
+          source: s.categoryName || 'portal-list',
+          success: s.success,
+          scrapedAt: s.checkedAt,
+          url: s.url,
+          error: s.error ?? null,
+          durationMs: s.durationMs,
+          documentTypes,
+        });
+      }
 
       // Merge check outcome back onto catalog portals for the report UI
       const checkById = new Map(siteChecks.map((s) => [s.id || s.url, s]));
@@ -320,6 +405,7 @@ export class VerificationEnrichmentService {
         success: failCount === 0 || okCount > 0,
         data: {
           portalCount: catalog.portalCount,
+          filteredByDocumentTypes: documentTypes,
           checkedCount: siteChecks.length,
           okCount,
           failCount,
@@ -332,7 +418,7 @@ export class VerificationEnrichmentService {
 
       if (failCount > 0) softFailures.push('portal-site-checks');
       cascadeNotes.push(
-        `Portal sites checked one-by-one: ${okCount} OK / ${failCount} failed of ${siteChecks.length} relevant`,
+        `Portal sites checked (concurrency=${concurrency}): ${okCount} OK / ${failCount} failed of ${siteChecks.length}`,
       );
     } catch (error: any) {
       softFailures.push('portal-catalog');
@@ -343,6 +429,63 @@ export class VerificationEnrichmentService {
         error: error?.message ?? 'Failed to load / check portal catalog',
       };
     }
+
+    // Record address / WHOIS scrapes that already ran
+    if (scrapePayload.residentialAddress) {
+      executedScrapes.push({
+        api: 'POST /scrapping/pincode-search',
+        name: 'Residential address / pincode',
+        source: scrapePayload.residentialAddress.source || 'postalpincode.in',
+        success: !!scrapePayload.residentialAddress.success,
+        scrapedAt: scrapePayload.residentialAddress.scrapedAt,
+        error: scrapePayload.residentialAddress.error ?? null,
+        documentTypes,
+      });
+    }
+    if (scrapePayload.officeAddress) {
+      executedScrapes.push({
+        api: 'POST /scrapping/pincode-search',
+        name: 'Office address / pincode',
+        source: scrapePayload.officeAddress.source || 'postalpincode.in',
+        success: !!scrapePayload.officeAddress.success,
+        scrapedAt: scrapePayload.officeAddress.scrapedAt,
+        error: scrapePayload.officeAddress.error ?? null,
+        documentTypes,
+      });
+    }
+    if (scrapePayload.domain) {
+      executedScrapes.push({
+        api: 'POST /scrapping/whois-search',
+        name: 'Domain / WHOIS',
+        source: scrapePayload.domain.source || 'who.is',
+        success: !!scrapePayload.domain.success,
+        scrapedAt: scrapePayload.domain.scrapedAt,
+        error: scrapePayload.domain.error ?? null,
+        documentTypes,
+      });
+    }
+    if (scrapePayload.gstDerivedAddress) {
+      executedScrapes.push({
+        api: 'POST /scrapping/pincode-search',
+        name: 'GST-derived address / pincode',
+        source: scrapePayload.gstDerivedAddress.source || 'postalpincode.in',
+        success: !!scrapePayload.gstDerivedAddress.success,
+        scrapedAt: scrapePayload.gstDerivedAddress.scrapedAt,
+        error: scrapePayload.gstDerivedAddress.error ?? null,
+        documentTypes,
+      });
+    }
+
+    scrapePayload.executedScrapes = {
+      source: 'verification-enrichment',
+      scrapedAt: new Date().toISOString(),
+      success: executedScrapes.some((s) => s.success) || executedScrapes.length === 0,
+      data: {
+        count: executedScrapes.length,
+        documentTypes,
+        apis: executedScrapes,
+      },
+    };
 
     const hasSoftFailure = softFailures.length > 0;
     scrapePayload.pipeline = {
@@ -359,6 +502,8 @@ export class VerificationEnrichmentService {
         ],
         cascadeNotes,
         softFailures,
+        documentTypes,
+        executedScrapeCount: executedScrapes.length,
         inputSummary: {
           hasResidential: !!scrapePayload.residentialAddress,
           hasOffice: !!scrapePayload.officeAddress,
@@ -366,6 +511,7 @@ export class VerificationEnrichmentService {
           hasDomain: !!scrapePayload.domain,
           hasPortalCatalog: !!scrapePayload.portalCatalog,
           hasBusinessMatch: !!scrapePayload.businessMatch,
+          hasExecutedScrapes: executedScrapes.length > 0,
         },
       },
     };

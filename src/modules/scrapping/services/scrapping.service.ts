@@ -771,12 +771,17 @@ export class ScrappingService {
         return result;
       });
 
-      // If site blocked or structure changed, fields may be empty; still return with sourceUrl.
       const normalizedFields: Record<string, string> = {};
       for (const [k, v] of Object.entries(fields ?? {})) {
         const nk = this.normalizeText(k);
         const nv = this.normalizeText(v);
         if (nk && nv) normalizedFields[nk] = nv;
+      }
+
+      if (Object.keys(normalizedFields).length === 0) {
+        throw new ServiceUnavailableException(
+          'KnowYourGST returned no GST detail fields — page structure may have changed or the request was blocked',
+        );
       }
 
       return {
@@ -883,6 +888,11 @@ export class ScrappingService {
       }
 
       const whoisCom = await this.scrapeWhoisCom(browser, domain);
+      if (!whoisCom?.fields || Object.keys(whoisCom.fields).length === 0) {
+        throw new ServiceUnavailableException(
+          `WHOIS returned no fields for ${domain} — selectors may have changed or the domain has no public WHOIS`,
+        );
+      }
       return {
         code: HttpStatus.OK,
         message: 'WHOIS details fetched successfully from whois.com',
@@ -1308,7 +1318,8 @@ export class ScrappingService {
   }
 
   /**
-   * Check portal sites one-by-one (sequential) so report generation probes each listed URL.
+   * Check portal sites (sequential when concurrency<=1, otherwise bounded parallel).
+   * Digital report historically probed one-by-one; OCR uses concurrency for speed.
    */
   async checkPortalSitesSequentially(
     portals: Array<{
@@ -1320,7 +1331,11 @@ export class ScrappingService {
       categoryKey?: string;
       relevant?: boolean;
     }>,
-    options?: { timeoutMs?: number; onProgress?: (done: number, total: number, title: string) => void },
+    options?: {
+      timeoutMs?: number;
+      concurrency?: number;
+      onProgress?: (done: number, total: number, title: string) => void;
+    },
   ): Promise<
     Array<{
       id?: string;
@@ -1339,7 +1354,7 @@ export class ScrappingService {
       checkedAt: string;
     }>
   > {
-    const results: Array<{
+    type PortalCheckRow = {
       id?: string;
       title: string;
       state?: string;
@@ -1354,33 +1369,49 @@ export class ScrappingService {
       durationMs: number;
       error?: string;
       checkedAt: string;
-    }> = [];
+    };
 
     const list = portals.filter((p) => !!String(p.url || '').trim());
-    for (let i = 0; i < list.length; i++) {
-      const p = list[i];
-      options?.onProgress?.(i + 1, list.length, p.title);
-      const check = await this.checkPortalSite(p.url, {
-        timeoutMs: options?.timeoutMs,
-      });
-      results.push({
-        id: p.id,
-        title: p.title,
-        state: p.state,
-        url: p.url,
-        categoryName: p.categoryName,
-        categoryKey: p.categoryKey,
-        relevant: p.relevant !== false,
-        success: check.success,
-        httpStatus: check.httpStatus,
-        titleTag: check.title,
-        finalUrl: check.finalUrl,
-        durationMs: check.durationMs,
-        error: check.error,
-        checkedAt: check.checkedAt,
-      });
-    }
-    return results;
+    const results: PortalCheckRow[] = new Array(list.length);
+    const concurrency = Math.max(1, Math.min(options?.concurrency ?? 1, 8));
+    let nextIndex = 0;
+    let done = 0;
+
+    const worker = async () => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= list.length) return;
+        const p = list[i];
+        const check = await this.checkPortalSite(p.url, {
+          timeoutMs: options?.timeoutMs,
+        });
+        results[i] = {
+          id: p.id,
+          title: p.title,
+          state: p.state,
+          url: p.url,
+          categoryName: p.categoryName,
+          categoryKey: p.categoryKey,
+          relevant: p.relevant !== false,
+          success: check.success,
+          httpStatus: check.httpStatus,
+          titleTag: check.title,
+          finalUrl: check.finalUrl,
+          durationMs: check.durationMs,
+          error: check.error,
+          checkedAt: check.checkedAt,
+        };
+        done += 1;
+        options?.onProgress?.(done, list.length, p.title);
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, list.length || 1) }, () =>
+        worker(),
+      ),
+    );
+    return results.filter(Boolean);
   }
 }
 

@@ -49,6 +49,10 @@ export class OcrService {
   private readonly identifyEndpoint = `${this.ocrBaseUrl}/api/document/identify`;
   private readonly healthEndpoint = `${this.ocrBaseUrl}/health`;
 
+  /** Avoid pinging /health on every identify+verify call (major OCR latency). */
+  private healthCacheOkUntilMs = 0;
+  private static readonly HEALTH_CACHE_TTL_MS = 45_000;
+
   private authHeaders(): HeadersInit {
     if (!this.apiKey) return {};
     return { 'X-OCR-API-Key': this.apiKey };
@@ -77,8 +81,10 @@ export class OcrService {
     return fallback;
   }
 
-  /** Ping OCR sidecar before starting heavy jobs. */
+  /** Ping OCR sidecar before starting heavy jobs (cached ~45s). */
   async assertHealthy(): Promise<void> {
+    if (Date.now() < this.healthCacheOkUntilMs) return;
+
     let res: Response;
     try {
       res = await fetch(this.healthEndpoint, {
@@ -87,6 +93,7 @@ export class OcrService {
         signal: AbortSignal.timeout(5000),
       });
     } catch (err) {
+      this.healthCacheOkUntilMs = 0;
       this.logger.error(
         `[OCR:HEALTH] unreachable endpoint=${this.healthEndpoint}`,
         err instanceof Error ? err.stack : err,
@@ -96,15 +103,29 @@ export class OcrService {
       );
     }
     if (!res.ok) {
+      this.healthCacheOkUntilMs = 0;
       throw new ServiceUnavailableException(
         `OCR service unhealthy (HTTP ${res.status}) at ${this.ocrBaseUrl}`,
       );
     }
+    this.healthCacheOkUntilMs = Date.now() + OcrService.HEALTH_CACHE_TTL_MS;
   }
 
   async identifyDocument(
     file: UploadedFileLike | undefined,
-  ): Promise<APIResponseInterface<{ documentType: string; confidence: number }>> {
+  ): Promise<
+    APIResponseInterface<{
+      documentType: string;
+      confidence: number;
+      identificationAccepted?: boolean;
+      identificationUncertain?: boolean;
+      validationStatus?: string;
+      validationStatusLabel?: string;
+      source?: string;
+      evidence?: string[];
+      message?: string;
+    }>
+  > {
     if (!file) throw new BadRequestException('file is required');
     await this.assertHealthy();
 
@@ -157,15 +178,39 @@ export class OcrService {
     const confidence = Number.isFinite(confidenceRaw)
       ? Math.min(1, Math.max(0, confidenceRaw))
       : 0;
+    const identificationAccepted =
+      typeof body?.identificationAccepted === 'boolean'
+        ? body.identificationAccepted
+        : undefined;
+    const identificationUncertain =
+      typeof body?.identificationUncertain === 'boolean'
+        ? body.identificationUncertain
+        : undefined;
+    const validationStatus =
+      typeof body?.validationStatus === 'string' ? body.validationStatus : undefined;
+    const validationStatusLabel =
+      typeof body?.validationStatusLabel === 'string'
+        ? body.validationStatusLabel
+        : undefined;
 
     this.logger.log(
-      `[OCR:IDENTIFY] OK file="${filename}" documentType="${documentType}" confidence=${confidence}`,
+      `[OCR:IDENTIFY] OK file="${filename}" documentType="${documentType}" confidence=${confidence} accepted=${identificationAccepted ?? 'n/a'} status=${validationStatus ?? 'n/a'}`,
     );
 
     return {
       code: HttpStatus.OK,
-      message: 'Document identified',
-      data: { documentType, confidence },
+      message: String(body?.message ?? 'Document identified'),
+      data: {
+        documentType,
+        confidence,
+        ...(identificationAccepted !== undefined ? { identificationAccepted } : {}),
+        ...(identificationUncertain !== undefined ? { identificationUncertain } : {}),
+        ...(validationStatus ? { validationStatus } : {}),
+        ...(validationStatusLabel ? { validationStatusLabel } : {}),
+        ...(typeof body?.source === 'string' ? { source: body.source } : {}),
+        ...(Array.isArray(body?.evidence) ? { evidence: body.evidence } : {}),
+        ...(typeof body?.message === 'string' ? { message: body.message } : {}),
+      },
     };
   }
 

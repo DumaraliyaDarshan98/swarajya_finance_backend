@@ -28,6 +28,7 @@ import { FieldAgentAttendanceModule } from './modules/field-agent-attendance/fie
 import { GeoModule } from './modules/geo/geo.module';
 import { TrainingModule } from './modules/training/training.module';
 import { SubscriptionPlanModule } from './modules/subscription-plan/subscription-plan.module';
+import { BillingModule } from './modules/billing/billing.module';
 import { RcuTriggersModule } from './modules/rcu-triggers/rcu-triggers.module';
 import { ForensicChecksModule } from './modules/forensic-checks/forensic-checks.module';
 import { PortalListModule } from './modules/portal-list/portal-list.module';
@@ -84,6 +85,7 @@ import { JobApplicationModule } from './modules/job-application/job-application.
     GeoModule,
     TrainingModule,
     SubscriptionPlanModule,
+    BillingModule,
     RcuTriggersModule,
     ForensicChecksModule,
     PortalListModule,

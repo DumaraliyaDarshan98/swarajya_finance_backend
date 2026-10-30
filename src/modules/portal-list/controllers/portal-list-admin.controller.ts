@@ -22,12 +22,35 @@ import {
   UpdatePortalDto,
   UpdatePortalFlagsDto,
 } from '../dto/portal-list.dto';
+import { PortalTestScrapeDto, PortalValidateAllDto } from '../dto/portal-test.dto';
+import { PortalTestService } from '../services/portal-test.service';
 
 @Controller('admin/portal-list')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SUPER_ADMIN)
 export class PortalListAdminController {
-  constructor(private readonly service: PortalListService) {}
+  constructor(
+    private readonly service: PortalListService,
+    private readonly portalTestService: PortalTestService,
+  ) {}
+
+  /** Admin Test Portal — strategies + portals with resolved scrape metadata */
+  @Get('test/catalog')
+  getTestCatalog() {
+    return this.portalTestService.getTestCatalog();
+  }
+
+  /** Run scrape/reachability test for one portal */
+  @Post('test/scrape')
+  testScrape(@Body() dto: PortalTestScrapeDto) {
+    return this.portalTestService.testPortal(dto);
+  }
+
+  /** Validate all portals one-by-one (reachability; optional field scrapes) */
+  @Post('test/validate-all')
+  validateAll(@Body() dto: PortalValidateAllDto) {
+    return this.portalTestService.validateAll(dto);
+  }
 
   @Get('tree')
   getTree(@Query('activeOnly') activeOnly?: string) {
