@@ -23,6 +23,10 @@ import {
   portalCategoriesForDocumentTypes,
   type ExecutedScrapeApi,
 } from '../helpers/portal-document-type.helper';
+import {
+  resolvePortalScrapeDefinition,
+  type PortalScrapeStrategy,
+} from '../../portal-list/config/portal-scrape-registry';
 import type {
   EnrichmentOptions,
   EnrichmentResult,
@@ -374,20 +378,54 @@ export class VerificationEnrichmentService {
         });
       }
 
-      // Merge check outcome back onto catalog portals for the report UI
+      // Merge probe outcome; attach scraped fields ONLY to the portal that owns that scraper.
       const checkById = new Map(siteChecks.map((s) => [s.id || s.url, s]));
-      const categoriesWithChecks = categories.map((cat) => ({
+      const claimedStrategies = new Set<PortalScrapeStrategy>();
+
+      let categoriesWithChecks = categories.map((cat) => ({
         ...cat,
         portals: (cat.portals || []).map((p) => {
+          const def = resolvePortalScrapeDefinition(p);
           const check = checkById.get(p.id) || checkById.get(p.url);
+          const scrapeAttach = this.scrapedFieldsForStrategy(
+            def.strategy,
+            scrapePayload,
+          );
+          const scrapeInputs = this.scrapeInputsForStrategy(
+            def.strategy,
+            input,
+            scrapePayload,
+          );
+          if (scrapeAttach.fields) {
+            claimedStrategies.add(def.strategy);
+          }
+          const description = this.portalDescription({
+            state: p.state,
+            strategyLabel: def.label,
+            supportsFieldScrape: def.supportsFieldScrape,
+            fieldScrapeDone: !!scrapeAttach.fields,
+          });
+
           if (!check) {
             return {
               ...p,
+              description,
+              scrapeStrategy: def.strategy,
+              scrapeStrategyLabel: def.label,
+              supportsFieldScrape: def.supportsFieldScrape,
               checkStatus: p.relevant ? 'skipped' : 'not_relevant',
+              fieldScrapeDone: !!scrapeAttach.fields,
+              scrapeInputs: scrapeInputs || undefined,
+              scrapedFields: scrapeAttach.fields || undefined,
+              scrapedSource: scrapeAttach.source || undefined,
             };
           }
           return {
             ...p,
+            description,
+            scrapeStrategy: def.strategy,
+            scrapeStrategyLabel: def.label,
+            supportsFieldScrape: def.supportsFieldScrape,
             checkStatus: check.success ? 'ok' : 'failed',
             httpStatus: check.httpStatus,
             pageTitle: check.titleTag,
@@ -395,9 +433,22 @@ export class VerificationEnrichmentService {
             durationMs: check.durationMs,
             checkError: check.error,
             checkedAt: check.checkedAt,
+            fieldScrapeDone: !!scrapeAttach.fields,
+            scrapeInputs: scrapeInputs || undefined,
+            scrapedFields: scrapeAttach.fields || undefined,
+            scrapedSource: scrapeAttach.source || undefined,
           };
         }),
       }));
+
+      // Ensure scrapes that ran still appear under their own site card even if
+      // that portal was capped out of the OCR probe list.
+      categoriesWithChecks = this.ensureScrapedSitesVisible(
+        categoriesWithChecks,
+        scrapePayload,
+        claimedStrategies,
+        input,
+      );
 
       scrapePayload.portalCatalog = {
         source: 'portal-list',
@@ -527,6 +578,239 @@ export class VerificationEnrichmentService {
       derivedFrom: input,
       cascadeNotes,
     };
+  }
+
+  /** Request inputs sent (or available) for this portal’s scraper. */
+  private scrapeInputsForStrategy(
+    strategy: PortalScrapeStrategy,
+    input: ScrapeInput,
+    scrapePayload: ScrapePayload,
+  ): Record<string, string> | null {
+    const put = (rows: Array<[string, string | null | undefined]>) => {
+      const out: Record<string, string> = {};
+      for (const [label, value] of rows) {
+        const v = String(value ?? '').trim();
+        if (v) out[label] = v;
+      }
+      return Object.keys(out).length ? out : null;
+    };
+
+    if (strategy === 'gst-knowyourgst' || strategy === 'gst-portal') {
+      const gstFromPayload = String(
+        (scrapePayload.gst?.data as { gstNumber?: string } | undefined)?.gstNumber ||
+          '',
+      ).trim();
+      return put([
+        ['GSTIN', input.gstNumber || gstFromPayload || null],
+        ['Company name', input.companyName],
+        ['Business PAN', input.businessPan || input.panNumber],
+      ]);
+    }
+
+    if (strategy === 'whois') {
+      const domainFromPayload = String(
+        (scrapePayload.domain?.data as { domain?: string } | undefined)?.domain || '',
+      ).trim();
+      return put([
+        ['Domain', input.companyDomain || domainFromPayload || null],
+        ['Email (domain hint)', input.emailId],
+      ]);
+    }
+
+    if (strategy === 'pincode') {
+      const res = input.residential;
+      const off = input.office;
+      const fromPayload = scrapePayload.residentialAddress?.data as
+        | { pincode?: string | null; submittedAddress?: string | null }
+        | undefined;
+      return put([
+        [
+          'Pincode',
+          res?.pincode || off?.pincode || fromPayload?.pincode || null,
+        ],
+        [
+          'Address',
+          res?.address || off?.address || fromPayload?.submittedAddress || null,
+        ],
+        ['City', res?.city || off?.city],
+        ['State', res?.state || off?.state],
+      ]);
+    }
+
+    return null;
+  }
+
+  /** Fields for one portal strategy only — never share across unrelated sites. */
+  private scrapedFieldsForStrategy(
+    strategy: PortalScrapeStrategy,
+    scrapePayload: ScrapePayload,
+  ): { fields: Record<string, string> | null; source: string | null } {
+    const empty = { fields: null as Record<string, string> | null, source: null as string | null };
+
+    if (strategy === 'gst-knowyourgst') {
+      const fields =
+        (scrapePayload.gst?.data as { fields?: Record<string, string> } | undefined)?.fields ??
+        null;
+      if (!scrapePayload.gst?.success || !fields || !Object.keys(fields).length) return empty;
+      return { fields, source: scrapePayload.gst.source || 'knowyourgst' };
+    }
+
+    if (strategy === 'whois') {
+      const fields =
+        (scrapePayload.domain?.data as { fields?: Record<string, string> } | undefined)?.fields ??
+        null;
+      if (!scrapePayload.domain?.success || !fields || !Object.keys(fields).length) return empty;
+      return { fields, source: scrapePayload.domain.source || 'whois' };
+    }
+
+    if (strategy === 'pincode') {
+      const entry =
+        scrapePayload.residentialAddress?.success
+          ? scrapePayload.residentialAddress
+          : scrapePayload.officeAddress?.success
+            ? scrapePayload.officeAddress
+            : scrapePayload.gstDerivedAddress?.success
+              ? scrapePayload.gstDerivedAddress
+              : null;
+      if (!entry) return empty;
+      const data = entry.data as
+        | {
+            pincodeFields?: Record<string, string>;
+            submittedAddress?: string | null;
+            pincode?: string | null;
+            latitude?: string | null;
+            longitude?: string | null;
+          }
+        | undefined;
+      const fields: Record<string, string> = { ...(data?.pincodeFields ?? {}) };
+      if (data?.submittedAddress) fields['Submitted address'] = data.submittedAddress;
+      if (data?.pincode) fields['Pincode'] = data.pincode;
+      if (data?.latitude && data?.longitude) {
+        fields['Coordinates'] = `${data.latitude}, ${data.longitude}`;
+      }
+      if (!Object.keys(fields).length) return empty;
+      return { fields, source: entry.source || 'postalpincode.in' };
+    }
+
+    // gst-portal / reachability: OCR enrichment does not auto-complete captcha forms
+    return empty;
+  }
+
+  private portalDescription(opts: {
+    state?: string | null;
+    strategyLabel: string;
+    supportsFieldScrape: boolean;
+    fieldScrapeDone: boolean;
+  }): string {
+    const parts: string[] = [];
+    if (opts.state) parts.push(String(opts.state));
+    if (opts.fieldScrapeDone) {
+      parts.push(`Scraped via ${opts.strategyLabel}`);
+    } else if (opts.supportsFieldScrape) {
+      parts.push(`${opts.strategyLabel} (no field scrape this run)`);
+    } else {
+      parts.push('Availability check only — no field scraper for this site');
+    }
+    return parts.join(' · ');
+  }
+
+  /**
+   * If a dedicated scrape ran but its portal was not in the checked list,
+   * add a synthetic site card so data appears under that site only.
+   */
+  private ensureScrapedSitesVisible(
+    categories: Array<{
+      name: string;
+      key?: string;
+      portals?: any[];
+      [k: string]: unknown;
+    }>,
+    scrapePayload: ScrapePayload,
+    claimed: Set<PortalScrapeStrategy>,
+    input: ScrapeInput,
+  ): typeof categories {
+    const inject: Array<{
+      strategy: PortalScrapeStrategy;
+      categoryName: string;
+      title: string;
+      url: string;
+      state: string;
+    }> = [
+      {
+        strategy: 'gst-knowyourgst',
+        categoryName: 'GST',
+        title: 'KnowYourGST — GST Number Search',
+        url: 'https://www.knowyourgst.com/gst-number-search/',
+        state: 'Pan India',
+      },
+      {
+        strategy: 'whois',
+        categoryName: 'Website',
+        title: 'WHOIS Domain Lookup',
+        url: 'https://who.is/',
+        state: 'Pan India',
+      },
+      {
+        strategy: 'pincode',
+        categoryName: 'Address',
+        title: 'India Post Pincode Lookup',
+        url: 'https://www.postalpincode.in/',
+        state: 'Pan India',
+      },
+    ];
+
+    const next = categories.map((c) => ({
+      ...c,
+      portals: [...(c.portals || [])],
+    }));
+
+    for (const item of inject) {
+      if (claimed.has(item.strategy)) continue;
+      const attach = this.scrapedFieldsForStrategy(item.strategy, scrapePayload);
+      if (!attach.fields) continue;
+
+      const def = resolvePortalScrapeDefinition({ title: item.title, url: item.url });
+      const scrapeInputs = this.scrapeInputsForStrategy(
+        item.strategy,
+        input,
+        scrapePayload,
+      );
+      const portal = {
+        id: `scraped-${item.strategy}`,
+        title: item.title,
+        url: item.url,
+        state: item.state,
+        relevant: true,
+        description: this.portalDescription({
+          state: item.state,
+          strategyLabel: def.label,
+          supportsFieldScrape: true,
+          fieldScrapeDone: true,
+        }),
+        scrapeStrategy: item.strategy,
+        scrapeStrategyLabel: def.label,
+        supportsFieldScrape: true,
+        checkStatus: 'ok',
+        fieldScrapeDone: true,
+        scrapeInputs: scrapeInputs || undefined,
+        scrapedFields: attach.fields,
+        scrapedSource: attach.source,
+      };
+
+      let cat = next.find(
+        (c) =>
+          String(c.name || '').toLowerCase() === item.categoryName.toLowerCase() ||
+          String(c.key || '').toLowerCase() === item.categoryName.toLowerCase(),
+      );
+      if (!cat) {
+        cat = { name: item.categoryName, key: item.categoryName.toLowerCase(), portals: [] };
+        next.push(cat);
+      }
+      cat.portals = [portal, ...(cat.portals || [])];
+      claimed.add(item.strategy);
+    }
+
+    return next;
   }
 
   private isPortalRelevant(

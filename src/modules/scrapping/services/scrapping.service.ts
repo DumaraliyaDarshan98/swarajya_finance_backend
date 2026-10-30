@@ -1227,8 +1227,9 @@ export class ScrappingService {
   }
 
   /**
-   * Probe one public/gov portal URL for reachability (used by digital + OCR enrichment).
-   * Does not attempt captcha-protected form submissions — records HTTP availability + page title.
+   * Probe one public/gov portal URL (used by digital + OCR enrichment).
+   * Captures reachability + lightweight page response fields (title / meta / H1 / snippet).
+   * Does not submit captcha-protected search forms — that needs dedicated scrapers (GST, WHOIS, …).
    */
   async checkPortalSite(
     url: string,
@@ -1239,6 +1240,10 @@ export class ScrappingService {
     success: boolean;
     httpStatus: number | null;
     title: string | null;
+    metaDescription: string | null;
+    heading: string | null;
+    textSnippet: string | null;
+    responseFields: Record<string, string>;
     durationMs: number;
     error?: string;
     checkedAt: string;
@@ -1254,6 +1259,10 @@ export class ScrappingService {
         success: false,
         httpStatus: null,
         title: null,
+        metaDescription: null,
+        heading: null,
+        textSnippet: null,
+        responseFields: {},
         durationMs: 0,
         error: 'Invalid or missing URL',
         checkedAt,
@@ -1277,23 +1286,70 @@ export class ScrappingService {
 
       const contentType = String(res.headers.get('content-type') || '').toLowerCase();
       let title: string | null = null;
+      let metaDescription: string | null = null;
+      let heading: string | null = null;
+      let textSnippet: string | null = null;
+      const responseFields: Record<string, string> = {};
+
       if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
         const text = await res.text();
-        const slice = text.slice(0, 80_000);
-        const m = slice.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        title = m?.[1] ? this.normalizeText(m[1]).slice(0, 200) : null;
+        const slice = text.slice(0, 120_000);
+        const titleMatch = slice.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        title = titleMatch?.[1]
+          ? this.normalizeText(titleMatch[1]).slice(0, 200)
+          : null;
+
+        const metaMatch =
+          slice.match(
+            /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i,
+          ) ||
+          slice.match(
+            /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i,
+          );
+        metaDescription = metaMatch?.[1]
+          ? this.normalizeText(metaMatch[1]).slice(0, 300)
+          : null;
+
+        const h1Match = slice.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+        heading = h1Match?.[1]
+          ? this.normalizeText(h1Match[1].replace(/<[^>]+>/g, ' ')).slice(0, 200)
+          : null;
+
+        const stripped = slice
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        textSnippet = stripped ? stripped.slice(0, 280) : null;
+
+        if (title) responseFields['Page title'] = title;
+        if (metaDescription) responseFields['Meta description'] = metaDescription;
+        if (heading) responseFields['Heading'] = heading;
+        if (textSnippet) responseFields['Page snippet'] = textSnippet;
+        responseFields['Content type'] = contentType.split(';')[0] || contentType;
       } else {
         // Drain body for non-HTML so sockets close cleanly
         await res.arrayBuffer().catch(() => undefined);
+        responseFields['Content type'] = contentType.split(';')[0] || contentType || 'unknown';
       }
 
       const ok = res.status >= 200 && res.status < 400;
+      if (ok) {
+        responseFields['HTTP status'] = String(res.status);
+        responseFields['Final URL'] = res.url || target;
+      }
+
       return {
         url: target,
         finalUrl: res.url || target,
         success: ok,
         httpStatus: res.status,
         title,
+        metaDescription,
+        heading,
+        textSnippet,
+        responseFields,
         durationMs: Date.now() - started,
         error: ok ? undefined : `HTTP ${res.status}`,
         checkedAt,
@@ -1306,6 +1362,10 @@ export class ScrappingService {
         success: false,
         httpStatus: null,
         title: null,
+        metaDescription: null,
+        heading: null,
+        textSnippet: null,
+        responseFields: {},
         durationMs: Date.now() - started,
         error: aborted
           ? `Timeout after ${timeoutMs}ms`
@@ -1348,6 +1408,10 @@ export class ScrappingService {
       success: boolean;
       httpStatus: number | null;
       titleTag: string | null;
+      metaDescription: string | null;
+      heading: string | null;
+      textSnippet: string | null;
+      responseFields: Record<string, string>;
       finalUrl: string;
       durationMs: number;
       error?: string;
@@ -1365,6 +1429,10 @@ export class ScrappingService {
       success: boolean;
       httpStatus: number | null;
       titleTag: string | null;
+      metaDescription: string | null;
+      heading: string | null;
+      textSnippet: string | null;
+      responseFields: Record<string, string>;
       finalUrl: string;
       durationMs: number;
       error?: string;
@@ -1396,6 +1464,10 @@ export class ScrappingService {
           success: check.success,
           httpStatus: check.httpStatus,
           titleTag: check.title,
+          metaDescription: check.metaDescription,
+          heading: check.heading,
+          textSnippet: check.textSnippet,
+          responseFields: check.responseFields ?? {},
           finalUrl: check.finalUrl,
           durationMs: check.durationMs,
           error: check.error,

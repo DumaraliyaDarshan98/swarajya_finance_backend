@@ -38,6 +38,13 @@ export class JobApplicationService {
     email: string;
     mobileNumber: string;
     skill: string;
+    designation: string;
+    department: string;
+    location: string;
+    city: string;
+    state: string;
+    pincode: string;
+    fullAddress: string;
     aboutYourself: string;
     resumeStoredFileName: string;
     resumeOriginalName: string;
@@ -48,6 +55,13 @@ export class JobApplicationService {
     const email = input.email?.trim().toLowerCase();
     const mobileNumber = input.mobileNumber?.trim();
     const skill = input.skill?.trim();
+    const designation = input.designation?.trim();
+    const department = input.department?.trim();
+    const location = input.location?.trim();
+    const city = input.city?.trim();
+    const state = input.state?.trim();
+    const pincode = input.pincode?.trim().replace(/\s+/g, '');
+    const fullAddress = input.fullAddress?.trim();
     const aboutYourself = input.aboutYourself?.trim();
 
     if (!fullName || fullName.length < 2) {
@@ -62,6 +76,29 @@ export class JobApplicationService {
     if (!skill || skill.length < 2) {
       throw new BadRequestException('Please enter your primary skill(s)');
     }
+    if (!designation || designation.length < 2) {
+      throw new BadRequestException('Please enter your designation');
+    }
+    if (!department || department.length < 2) {
+      throw new BadRequestException('Please enter your department');
+    }
+    if (!location || location.length < 2) {
+      throw new BadRequestException('Please enter your location');
+    }
+    if (!city || city.length < 2) {
+      throw new BadRequestException('Please enter your city');
+    }
+    if (!state || state.length < 2) {
+      throw new BadRequestException('Please enter your state');
+    }
+    if (!pincode || !/^[1-9][0-9]{5}$/.test(pincode)) {
+      throw new BadRequestException('Please enter a valid 6-digit pincode');
+    }
+    if (!fullAddress || fullAddress.length < 10) {
+      throw new BadRequestException(
+        'Please enter your full address (min 10 characters)',
+      );
+    }
     if (!aboutYourself || aboutYourself.length < 20) {
       throw new BadRequestException('Please write a short note about yourself (min 20 characters)');
     }
@@ -74,6 +111,13 @@ export class JobApplicationService {
       email,
       mobileNumber: mobileNumber.replace(/\s+/g, ''),
       skill,
+      designation,
+      department,
+      location,
+      city,
+      state,
+      pincode,
+      fullAddress,
       aboutYourself,
       resumeStoredFileName: input.resumeStoredFileName,
       resumeOriginalName: input.resumeOriginalName || input.resumeStoredFileName,
@@ -120,7 +164,9 @@ export class JobApplicationService {
     if (query.search?.trim()) {
       const q = `%${query.search.trim()}%`;
       qb.andWhere(
-        '(j.full_name LIKE :q OR j.email LIKE :q OR j.mobile_number LIKE :q OR j.skill LIKE :q)',
+        `(j.full_name LIKE :q OR j.email LIKE :q OR j.mobile_number LIKE :q OR j.skill LIKE :q
+          OR j.designation LIKE :q OR j.department LIKE :q OR j.location LIKE :q
+          OR j.city LIKE :q OR j.state LIKE :q OR j.pincode LIKE :q OR j.full_address LIKE :q)`,
         { q },
       );
     }

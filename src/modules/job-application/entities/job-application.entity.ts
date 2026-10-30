@@ -27,6 +27,27 @@ export class JobApplication {
   @Column({ type: 'varchar', length: 255 })
   skill: string;
 
+  @Column({ type: 'varchar', length: 150, nullable: true })
+  designation: string | null;
+
+  @Column({ type: 'varchar', length: 150, nullable: true })
+  department: string | null;
+
+  @Column({ type: 'varchar', length: 150, nullable: true })
+  location: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  city: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  state: string | null;
+
+  @Column({ type: 'varchar', length: 12, nullable: true })
+  pincode: string | null;
+
+  @Column({ name: 'full_address', type: 'text', nullable: true })
+  fullAddress: string | null;
+
   @Column({ name: 'about_yourself', type: 'text' })
   aboutYourself: string;
 

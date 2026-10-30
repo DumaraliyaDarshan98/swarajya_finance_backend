@@ -361,7 +361,12 @@ export class PortalTestService {
             ? 'Site reachable — provide required inputs and run Test Scrape to validate field data'
             : 'Site reachable (HTTP check only — no field scraper configured for this portal)'
           : access.error || 'Site not reachable',
-        fields: accessible && access.title ? { 'Page Title': access.title } : {},
+        fields:
+          accessible && Object.keys(access.responseFields || {}).length
+            ? { ...access.responseFields }
+            : accessible && access.title
+              ? { 'Page Title': access.title }
+              : {},
         expectedMatched: [],
         expectedMissing: def.expectedFields,
         error: accessible ? null : access.error ?? 'Unreachable',

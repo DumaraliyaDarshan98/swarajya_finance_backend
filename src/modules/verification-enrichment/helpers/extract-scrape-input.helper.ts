@@ -110,6 +110,12 @@ export function scrapeInputFromExtractedDocs(
     'trade name',
     'organization',
     'employer name',
+    'name of enterprise',
+    'name of the enterprise',
+    'enterprise name',
+    'unit name',
+    'firm name',
+    'name of applicant enterprise',
   ]);
 
   const domainRaw =
@@ -130,16 +136,32 @@ export function scrapeInputFromExtractedDocs(
     'correspondence address',
     'principal place of business',
     'registered address',
+    'enterprise address',
+    'unit address',
+    'official address of enterprise',
+    'flat door block no',
+    'name of premises building',
+    'road street lane',
+    'village town',
   ]);
-  const city = findByAliases(flat, ['city', 'district']);
-  const state = findByAliases(flat, ['state']);
+  const city = findByAliases(flat, [
+    'city',
+    'district',
+    'city or town or village name',
+    'village town',
+  ]);
+  const state = findByAliases(flat, ['state', 'state name', 'state ut']);
   const pincode =
-    findByAliases(flat, ['pincode', 'pin code', 'pin']) || findRegex(flat, PIN_RE);
+    findByAliases(flat, ['pincode', 'pin code', 'pin', 'postal code']) ||
+    findRegex(flat, PIN_RE);
 
   const officeAddress = findByAliases(flat, [
     'office address',
     'business address',
     'work address',
+    'enterprise address',
+    'unit address',
+    'official address of enterprise',
   ]);
 
   return {
