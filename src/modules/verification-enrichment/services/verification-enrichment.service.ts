@@ -718,17 +718,14 @@ export class VerificationEnrichmentService {
    * If a dedicated scrape ran but its portal was not in the checked list,
    * add a synthetic site card so data appears under that site only.
    */
-  private ensureScrapedSitesVisible(
-    categories: Array<{
-      name: string;
-      key?: string;
-      portals?: any[];
-      [k: string]: unknown;
-    }>,
+  private ensureScrapedSitesVisible<
+    T extends { id?: string; name: string; key?: string; portals?: any[] },
+  >(
+    categories: T[],
     scrapePayload: ScrapePayload,
     claimed: Set<PortalScrapeStrategy>,
     input: ScrapeInput,
-  ): typeof categories {
+  ): T[] {
     const inject: Array<{
       strategy: PortalScrapeStrategy;
       categoryName: string;
@@ -759,7 +756,7 @@ export class VerificationEnrichmentService {
       },
     ];
 
-    const next = categories.map((c) => ({
+    const next: T[] = categories.map((c) => ({
       ...c,
       portals: [...(c.portals || [])],
     }));
@@ -803,7 +800,13 @@ export class VerificationEnrichmentService {
           String(c.key || '').toLowerCase() === item.categoryName.toLowerCase(),
       );
       if (!cat) {
-        cat = { name: item.categoryName, key: item.categoryName.toLowerCase(), portals: [] };
+        const key = item.categoryName.toLowerCase().replace(/\s+/g, '-');
+        cat = {
+          id: `scraped-cat-${key}`,
+          name: item.categoryName,
+          key,
+          portals: [],
+        } as unknown as T;
         next.push(cat);
       }
       cat.portals = [portal, ...(cat.portals || [])];
