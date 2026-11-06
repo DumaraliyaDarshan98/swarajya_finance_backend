@@ -255,6 +255,8 @@ export class RolesService {
     'RCU_TRIGGERS',
     'FORENSIC_CHECKS',
     'REPORT_CUSTOMIZATION',
+    'DEPARTMENTS',
+    'DESIGNATIONS',
   ]);
   // AUDIT_LOG is available to both platform and client role UIs
 
@@ -377,22 +379,34 @@ export class RolesService {
         sortOrder: 12,
       },
       {
+        name: 'Departments',
+        code: 'DEPARTMENTS',
+        description: 'Hiring department master',
+        sortOrder: 13,
+      },
+      {
+        name: 'Designations',
+        code: 'DESIGNATIONS',
+        description: 'Hiring designation master',
+        sortOrder: 14,
+      },
+      {
         name: 'Training',
         code: 'TRAINING',
         description: 'Training lessons and certificates',
-        sortOrder: 13,
+        sortOrder: 15,
       },
       {
         name: 'Subscription',
         code: 'SUBSCRIPTION',
         description: 'Subscription plans (admin) / plans (client)',
-        sortOrder: 14,
+        sortOrder: 16,
       },
       {
         name: 'Audit Logs',
         code: 'AUDIT_LOG',
         description: 'View security and activity audit trails',
-        sortOrder: 15,
+        sortOrder: 17,
       },
     ];
     const existing = await this.moduleRepo.find({

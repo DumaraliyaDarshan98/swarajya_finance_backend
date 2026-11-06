@@ -16,6 +16,8 @@ import {
 import { ListJobApplicationQueryDto } from '../dto/list-job-application-query.dto';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { MailService } from '../../mail/services/mail.service';
+import { DepartmentsService } from '../../departments/services/departments.service';
+import { DesignationsService } from '../../designations/services/designations.service';
 
 export const JOB_RESUME_UPLOAD_DIR = join(
   process.cwd(),
@@ -31,6 +33,8 @@ export class JobApplicationService {
     @InjectRepository(JobApplication)
     private readonly repo: Repository<JobApplication>,
     private readonly mailService: MailService,
+    private readonly departmentsService: DepartmentsService,
+    private readonly designationsService: DesignationsService,
   ) {}
 
   async submit(input: {
@@ -76,12 +80,8 @@ export class JobApplicationService {
     if (!skill || skill.length < 2) {
       throw new BadRequestException('Please enter your primary skill(s)');
     }
-    if (!designation || designation.length < 2) {
-      throw new BadRequestException('Please enter your designation');
-    }
-    if (!department || department.length < 2) {
-      throw new BadRequestException('Please enter your department');
-    }
+    await this.designationsService.assertActiveName(designation);
+    await this.departmentsService.assertActiveName(department);
     if (!location || location.length < 2) {
       throw new BadRequestException('Please enter your location');
     }

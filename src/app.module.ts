@@ -37,6 +37,8 @@ import { QueuesModule } from './queues/queues.module';
 import { CommonModule } from './common/common.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { JobApplicationModule } from './modules/job-application/job-application.module';
+import { DepartmentsModule } from './modules/departments/departments.module';
+import { DesignationsModule } from './modules/designations/designations.module';
 
 @Module({
   imports: [
@@ -90,6 +92,8 @@ import { JobApplicationModule } from './modules/job-application/job-application.
     ForensicChecksModule,
     PortalListModule,
     AuditLogModule,
+    DepartmentsModule,
+    DesignationsModule,
   ],
   controllers: [AppController],
   providers: [

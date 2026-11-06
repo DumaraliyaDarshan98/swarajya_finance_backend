@@ -16,7 +16,7 @@ const ormDBconfig: MysqlConnectionOptions = {
   connectorPackage: 'mysql2',
   namingStrategy: new SnakeNamingStrategy(),
   // synchronize: process.env.DB_SYNCHRONIZE !== 'false',
-  synchronize: false,
+  synchronize: true,
   logging: process.env.DB_LOGGING === 'true',
 };
 
