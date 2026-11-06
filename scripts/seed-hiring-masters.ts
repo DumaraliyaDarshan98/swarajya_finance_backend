@@ -18,6 +18,8 @@ async function main() {
     username: process.env.DB_USERNAME ?? 'root',
     password: process.env.DB_PASSWORD ?? '',
     database: process.env.DB_NAME ?? 'swarajya_finance',
+    // Must match app config — old `mysql` package fails on caching_sha2_password.
+    connectorPackage: 'mysql2',
     namingStrategy: new SnakeNamingStrategy(),
   });
 
