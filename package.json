@@ -18,6 +18,7 @@
     "seed:rcu-triggers": "ts-node -r tsconfig-paths/register scripts/seed-rcu-triggers.ts",
     "seed:forensic-checks": "ts-node -r tsconfig-paths/register scripts/seed-forensic-checks.ts",
     "seed:hiring-masters": "ts-node -r tsconfig-paths/register scripts/seed-hiring-masters.ts",
+    "fix:job-application-columns": "ts-node -r tsconfig-paths/register scripts/fix-job-application-columns.ts",
     "seed:portal-list": "ts-node -r tsconfig-paths/register scripts/seed-portal-list.ts",
     "reset:portal-rcu-flags": "ts-node -r tsconfig-paths/register scripts/reset-portal-rcu-flags.ts",
     "enable:rcu-ocr": "ts-node -r tsconfig-paths/register scripts/enable-rcu-ocr-flags.ts",
