@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, Min } from 'class-validator';
 
 export class ClientSettingsDto {
   @IsOptional()
@@ -16,4 +16,14 @@ export class ClientSettingsDto {
   @IsOptional()
   @IsBoolean()
   triangulation?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxUsers?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxRoles?: number | null;
 }

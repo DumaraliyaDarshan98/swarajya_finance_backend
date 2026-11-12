@@ -1,6 +1,8 @@
 export type PhysicalVerificationStatus =
   | 'DRAFT'
   | 'IN_PROGRESS'
+  | 'PARTIAL_ASSIGNED'
+  | 'ASSIGNED'
   | 'AGENT_ASSIGNED'
   | 'AGENT_DRAFT'
   | 'AGENT_SUBMITTED'
@@ -37,6 +39,7 @@ export interface DocumentTypeVerification {
   documentPrimaryKey: string;
   remark: string;
   fileName: string;
+  fileUrl?: string;
 }
 
 export interface PhysicalReportPayload {

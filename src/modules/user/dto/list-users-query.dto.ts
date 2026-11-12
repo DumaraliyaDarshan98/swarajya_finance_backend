@@ -8,7 +8,7 @@ import {
   IsUUID,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { Role } from '../../../enum/role.enum';
+import { Role } from '../../../common/enums/role.enum';
 
 export class ListUsersQueryDto {
   @IsOptional()
@@ -35,4 +35,9 @@ export class ListUsersQueryDto {
   @IsOptional()
   @IsUUID()
   customRoleId?: string;
+
+  /** Super admin: list users belonging to a specific client organization. */
+  @IsOptional()
+  @IsUUID()
+  clientId?: string;
 }

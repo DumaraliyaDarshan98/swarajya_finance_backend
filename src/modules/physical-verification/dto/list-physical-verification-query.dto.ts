@@ -24,6 +24,8 @@ export class ListPhysicalVerificationQueryDto {
   @IsIn([
     'DRAFT',
     'IN_PROGRESS',
+    'PARTIAL_ASSIGNED',
+    'ASSIGNED',
     'AGENT_ASSIGNED',
     'AGENT_DRAFT',
     'AGENT_SUBMITTED',

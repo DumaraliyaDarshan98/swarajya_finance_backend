@@ -1,0 +1,1489 @@
+import {
+  Injectable,
+  HttpStatus,
+  ServiceUnavailableException,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
+import type { Browser } from 'puppeteer';
+import { APIResponseInterface } from '../../../common/interfaces/response.interface';
+import { randomUUID } from 'crypto';
+
+type GstScrapeResult = {
+  gstNumber: string;
+  sourceUrl: string;
+  extractedAt: string;
+  fields: Record<string, string>;
+};
+
+type WhoisScrapeResult = {
+  domain: string;
+  sourceUrl: string;
+  extractedAt: string;
+  fields: Record<string, string>;
+};
+
+type PincodePostOffice = {
+  Name: string;
+  BranchType: string;
+  DeliveryStatus: string;
+  Circle: string;
+  District: string;
+  Division: string;
+  Region: string;
+  Block: string;
+  State: string;
+  Country: string;
+  Pincode: string;
+};
+
+type PincodeLookupResult = {
+  pincode: string;
+  sourceUrl: string;
+  extractedAt: string;
+  message: string;
+  postOffices: PincodePostOffice[];
+  fields: Record<string, string>;
+};
+
+type GstPortalSession = {
+  gstNumber: string;
+  cookies: any[];
+  createdAtMs: number;
+};
+
+type GstPortalInitResult = {
+  sessionId: string;
+  gstNumber: string;
+  sourceUrl: string;
+  captchaImageBase64: string;
+};
+
+type GstPortalSearchResult = {
+  gstNumber: string;
+  sourceUrl: string;
+  extractedAt: string;
+  details: Record<string, any>;
+  html: string;
+};
+
+@Injectable()
+export class ScrappingService {
+  private gstPortalSessions = new Map<string, GstPortalSession>();
+  private gstPortalSessionTtlMs = 5 * 60 * 1000;
+
+  private async launchBrowser(): Promise<Browser> {
+    try {
+      const puppeteer = await import('puppeteer');
+      return await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      });
+    } catch (e: any) {
+      throw new ServiceUnavailableException(
+        `Puppeteer launch failed: ${e?.message ?? 'unknown error'}`,
+      );
+    }
+  }
+
+  private normalizeText(value: unknown): string {
+    return String(value ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private normalizeDomain(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .split('/')[0]
+      .split('?')[0];
+  }
+
+  private cleanupExpiredGstPortalSessions() {
+    const now = Date.now();
+    for (const [id, session] of this.gstPortalSessions.entries()) {
+      if (now - session.createdAtMs > this.gstPortalSessionTtlMs) {
+        this.gstPortalSessions.delete(id);
+      }
+    }
+  }
+
+  private async extractCaptchaBase64(page: any): Promise<string> {
+    // Prefer element screenshot; works for <img>, <canvas>, background images, etc.
+    const selectors = [
+      'img[src*="captcha" i]',
+      'img[id*="captcha" i]',
+      'img[class*="captcha" i]',
+      'canvas[id*="captcha" i]',
+      'canvas[class*="captcha" i]',
+      'canvas',
+    ];
+
+    for (const selector of selectors) {
+      const el = await page.$(selector);
+      if (!el) continue;
+      try {
+        const b64 = await el.screenshot({ encoding: 'base64' });
+        if (typeof b64 === 'string' && b64.length > 100) return b64;
+      } catch {
+        // continue
+      }
+    }
+
+    // Fallback: try to locate an <img> and if it's already a data URL, return it.
+    const dataUrl = await page.evaluate(() => {
+      const images = Array.from(document.querySelectorAll('img')) as HTMLImageElement[];
+      const candidate =
+        images.find((i) => /captcha/i.test(i.id || '')) ||
+        images.find((i) => /captcha/i.test(i.className || '')) ||
+        images.find((i) => /captcha/i.test(i.getAttribute('alt') || '')) ||
+        images.find((i) => /captcha/i.test(i.getAttribute('src') || '')) ||
+        images.find((i) => (i.getAttribute('src') || '').startsWith('data:image/'));
+      return candidate?.getAttribute('src') || '';
+    });
+
+    if (dataUrl?.startsWith('data:image/') && dataUrl.includes('base64,')) {
+      return dataUrl.split('base64,')[1] || '';
+    }
+
+    throw new ServiceUnavailableException('Captcha image not found on GST portal page');
+  }
+
+  async gstPortalInit(
+    gstNumber: string,
+  ): Promise<APIResponseInterface<GstPortalInitResult>> {
+    this.cleanupExpiredGstPortalSessions();
+
+    const gst = gstNumber.trim().toUpperCase();
+    const url = 'https://services.gst.gov.in/services/searchtp';
+
+    const browser = await this.launchBrowser();
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(60_000);
+      page.setDefaultTimeout(30_000);
+
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+      // Fill GSTIN/UIN input (type to trigger keyup handler that shows captcha).
+      await page.waitForSelector('input#for_gstin', { timeout: 30_000 });
+      await page.focus('input#for_gstin');
+      await page.keyboard.down('Control');
+      await page.keyboard.press('A');
+      await page.keyboard.up('Control');
+      await page.keyboard.press('Backspace');
+      await page.type('input#for_gstin', gst, { delay: 50 });
+
+      // Click Search to trigger captcha (portal shows captcha flow after this).
+      await page.click('button#lotsearch').catch(() => undefined);
+
+      // Wait for captcha input to appear (best signal that captcha is rendered).
+      await page
+        .waitForSelector('input[name="cap"], input#cap, input[ng-model*="cap"]', {
+          timeout: 30_000,
+        })
+        .catch(() => undefined);
+
+      // Give UI a moment to paint captcha element after the input shows up.
+      await new Promise((r) => setTimeout(r, 750));
+
+      const captchaImageBase64 = await this.extractCaptchaBase64(page);
+      const cookies = await page.cookies();
+
+      const sessionId = randomUUID();
+      this.gstPortalSessions.set(sessionId, {
+        gstNumber: gst,
+        cookies,
+        createdAtMs: Date.now(),
+      });
+
+      return {
+        code: HttpStatus.OK,
+        message: 'Captcha generated successfully',
+        data: {
+          sessionId,
+          gstNumber: gst,
+          sourceUrl: url,
+          captchaImageBase64,
+        },
+      };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  // async gstPortalSearch(
+  //   sessionId: string,
+  //   captchaCode: string,
+  // ): Promise<APIResponseInterface<GstPortalSearchResult>> {
+  
+  //   this.cleanupExpiredGstPortalSessions();
+  
+  //   const session = this.gstPortalSessions.get(sessionId);
+  
+  //   if (!session) {
+  //     throw new NotFoundException(
+  //       'Session expired or invalid',
+  //     );
+  //   }
+  
+  //   const url =
+  //     'https://services.gst.gov.in/services/searchtp';
+  
+  //   const browser = await this.launchBrowser();
+  
+  //   try {
+  
+  //     const page : any = await browser.newPage();
+  
+  //     page.setDefaultNavigationTimeout(
+  //       60000,
+  //     );
+  
+  //     page.setDefaultTimeout(
+  //       30000,
+  //     );
+  
+  //     if (session.cookies?.length) {
+  //       await page.setCookie(
+  //         ...(session.cookies as any),
+  //       );
+  //     }
+  
+  //     await page.goto(
+  //       url,
+  //       {
+  //         waitUntil: 'networkidle2'
+  //       }
+  //     );
+  
+  //     await page.waitForSelector(
+  //       '#for_gstin',
+  //       {
+  //         visible: true
+  //       }
+  //     );
+  
+  //     //
+  //     // ENTER GST NUMBER
+  //     //
+  
+  //     await page.click(
+  //       '#for_gstin',
+  //       {
+  //         clickCount: 3
+  //       }
+  //     );
+  
+  //     await page.keyboard.press(
+  //       'Backspace'
+  //     );
+  
+  //     await page.type(
+  //       '#for_gstin',
+  //       session.gstNumber,
+  //       {
+  //         delay: 50
+  //       }
+  //     );
+  
+  //     //
+  //     // CAPTCHA
+  //     //
+  
+  //     const captchaSelector =
+  //       'input#fo-captcha,' +
+  //       'input#captcha,' +
+  //       'input[name="cap"]';
+  
+  //     const captchaExists =
+  //       await page.$(
+  //         captchaSelector
+  //       );
+  
+  //     if (captchaExists) {
+  
+  //       if (!captchaCode?.trim()) {
+  //         throw new BadRequestException(
+  //           'captchaCode required'
+  //         );
+  //       }
+  
+  //       await page.click(
+  //         captchaSelector,
+  //         {
+  //           clickCount: 3
+  //         }
+  //       );
+  
+  //       await page.keyboard.press(
+  //         'Backspace'
+  //       );
+  
+  //       await page.type(
+  //         captchaSelector,
+  //         captchaCode.trim(),
+  //         {
+  //           delay: 100
+  //         }
+  //       );
+  //     }
+  
+  //     //
+  //     // CLICK SEARCH
+  //     //
+  
+  //     await Promise.all([
+  
+  //       page.click(
+  //         '#lotsearch'
+  //       ),
+  
+  //       page.waitForFunction(
+  //         () => {
+  
+  //           const el =
+  //             document.querySelector(
+  //               '#lottable'
+  //             );
+  
+  //           if (!el) {
+  //             return false;
+  //           }
+  
+  //           const txt =
+  //             el.textContent || '';
+  
+  //           return (
+  //             txt.length > 100 &&
+  //             txt.includes(
+  //               'Legal Name'
+  //             )
+  //           );
+  
+  //         },
+  //         {
+  //           timeout: 45000
+  //         }
+  //       )
+  
+  //     ]);
+  
+  //     //
+  //     // EXTRA WAIT FOR ANGULAR
+  //     //
+  
+  //     await page.waitForTimeout(
+  //       2000
+  //     );
+  
+  //     const result : any =
+  //       await page.evaluate(() => {
+  
+  //       const clean = (
+  //         value: string
+  //       ) =>
+  //         value
+  //         ?.replace(
+  //           /\s+/g,
+  //           ' '
+  //         )
+  //         .trim();
+  
+  //       const out: any = {};
+  
+  //       const root =
+  //         document.querySelector(
+  //           '#lottable'
+  //         );
+  
+  //       if (!root) {
+  //         return null;
+  //       }
+  
+  //       //
+  //       // BASIC DETAILS
+  //       //
+  
+  //       root
+  //       .querySelectorAll(
+  //         '.tbl-format .col-sm-4'
+  //       )
+  //       .forEach(
+  //         (col) => {
+  
+  //         const strong =
+  //           col.querySelector(
+  //             'strong'
+  //           );
+  
+  //         const p =
+  //           col.querySelectorAll(
+  //             'p'
+  //           );
+  
+  //         const label =
+  //           clean(
+  //             strong?.textContent || ''
+  //           );
+  
+  //         if (
+  //           label &&
+  //           p.length >= 2
+  //         ) {
+  
+  //           out[label] =
+  //             clean(
+  //               p[
+  //                 p.length - 1
+  //               ].textContent || ''
+  //             );
+  
+  //         }
+  
+  //       });
+  
+  //       //
+  //       // ADMIN OFFICE
+  //       //
+  
+  //       const office =
+  //         Array.from(
+  //           root.querySelectorAll(
+  //             '.jurisdictList li'
+  //           )
+  //         )
+  //         .map(
+  //           x =>
+  //             clean(
+  //               x.textContent || ''
+  //             )
+  //         );
+  
+  //       out.adminOffice =
+  //         office;
+  
+  //       //
+  //       // BUSINESS ACTIVITY
+  //       //
+  
+  //       out.businessActivities =
+  //         Array.from(
+  //           root.querySelectorAll(
+  //             '.list-child-inline li'
+  //           )
+  //         )
+  //         .map(
+  //           x =>
+  //             clean(
+  //               x.textContent || ''
+  //             )
+  //         );
+  
+  //       //
+  //       // GOODS
+  //       //
+  
+  //       out.goods =
+  //         [];
+  
+  //       root
+  //       .querySelectorAll(
+  //         'table tbody tr'
+  //       )
+  //       .forEach(
+  //         row => {
+  
+  //         const td =
+  //           row.querySelectorAll(
+  //             'td'
+  //           );
+  
+  //         if (
+  //           td.length >= 2 &&
+  //           td[0]
+  //           .innerText !==
+  //           'HSN'
+  //         ) {
+  
+  //           out.goods.push({
+  
+  //             hsn:
+  //             clean(
+  //               td[0]
+  //               .innerText
+  //             ),
+  
+  //             description:
+  //             clean(
+  //               td[1]
+  //               .innerText
+  //             )
+  
+  //           });
+  
+  //         }
+  
+  //       });
+  
+  //       return {
+  
+  //         details: out,
+  
+  //         html:
+  //           root.outerHTML
+  
+  //       };
+  
+  //     });
+  
+  //     this
+  //     .gstPortalSessions
+  //     .delete(
+  //       sessionId
+  //     );
+  
+  //     return {
+  
+  //       code:
+  //         HttpStatus.OK,
+  
+  //       message:
+  //         'GST fetched successfully',
+  
+  //       data: {
+  
+  //         gstNumber:
+  //           session.gstNumber,
+  
+  //         sourceUrl:
+  //           url,
+  
+  //         extractedAt:
+  //           new Date()
+  //           .toISOString(),
+  
+  //         details:
+  //           result.details,
+  
+  //         html:
+  //           result.html
+  
+  //       }
+  
+  //     };
+  
+  //   }
+  //   finally {
+  
+  //     await browser
+  //     .close()
+  //     .catch(
+  //       () => {}
+  //     );
+  
+  //   }
+  
+  // }
+
+  async gstPortalSearch(
+    sessionId: string,
+    captchaCode: string,
+  ): Promise<APIResponseInterface<GstPortalSearchResult>> {
+    this.cleanupExpiredGstPortalSessions();
+
+    const session = this.gstPortalSessions.get(sessionId);
+    if (!session) {
+      throw new NotFoundException('Session expired or invalid. Please regenerate captcha.');
+    }
+
+    const url = 'https://services.gst.gov.in/services/searchtp';
+
+    const browser = await this.launchBrowser();
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(60_000);
+      page.setDefaultTimeout(30_000);
+
+      if (session.cookies?.length) {
+        await page.setCookie(...(session.cookies as any));
+      }
+
+      // await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await page.goto(url, { waitUntil: 'networkidle2' });
+      await page.waitForSelector('input#for_gstin', { timeout: 30_000 });
+
+      // Fill GSTIN/UIN input.
+      await page.evaluate(
+        (gstinValue) => {
+          const gstin = document.querySelector('input#for_gstin') as HTMLInputElement | null;
+          if (gstin) {
+            gstin.value = gstinValue;
+            gstin.dispatchEvent(new Event('input', { bubbles: true }));
+            gstin.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        },
+        session.gstNumber,
+      );
+
+      // If captcha input exists on the page, require captchaCode and fill it.
+      const capSelector = 'input[name="cap"], input#cap, input[ng-model*="cap"]';
+      const capInput = await page.$(capSelector);
+      if (capInput) {
+        const code = (captchaCode ?? '').trim();
+        if (!code) {
+          throw new BadRequestException('captchaCode is required');
+        }
+        await page.focus(capSelector).catch(() => undefined);
+        await page.keyboard.down('Control');
+        await page.keyboard.press('A');
+        await page.keyboard.up('Control');
+        await page.keyboard.press('Backspace');
+        await page.type(capSelector, code, { delay: 50 }).catch(() => undefined);
+      }
+
+      await page.click('button#lotsearch').catch(() => undefined);
+
+      // Wait for results block to appear.
+      await page.waitForSelector('#lottable', { timeout: 45_000 });
+
+      const { details, html } = await page.evaluate(() => {
+        const out: Record<string, any> = {};
+        const lottable = document.querySelector('#lottable') as HTMLElement | null;
+        if (!lottable) return { details: out, html: '' };
+
+        // Extract simple labeled fields: <p><strong>Label</strong></p> followed by a <p>Value</p>
+        const inners = Array.from(lottable.querySelectorAll('.tbl-format .inner'));
+        for (const inner of inners) {
+          const cols = Array.from(inner.querySelectorAll('[class*="col-"]'));
+          for (const col of cols) {
+            const strong = col.querySelector('p strong');
+            const ps = Array.from(col.querySelectorAll('p'));
+            const label = (strong?.textContent || '').replace(/\s+/g, ' ').trim();
+            const valueCandidate = ps
+              .map((p) => (p.textContent || '').replace(/\s+/g, ' ').trim())
+              .filter(Boolean)
+              .filter((t) => t !== label);
+            const value = valueCandidate[0] || '';
+            if (label) out[label] = value;
+
+            // Administrative/Other office lists
+            const ul = col.querySelector('ul');
+            if (label && ul) {
+              const items = Array.from(ul.querySelectorAll('li'))
+                .map((li) => (li.textContent || '').replace(/\s+/g, ' ').trim())
+                .filter(Boolean);
+              if (items.length) out[label] = items;
+            }
+          }
+        }
+
+        // Principal Place of Business (has ng-bind in sample; UI renders as text)
+        const principal =
+          lottable.querySelector('.taxpayer-info')?.parentElement?.querySelector(
+            'p.wordCls',
+          ) || lottable.querySelector('p.wordCls');
+        if (principal?.textContent?.trim()) {
+          out['Principal Place of Business'] = principal.textContent
+            .replace(/\s+/g, ' ')
+            .trim();
+        }
+
+        return { details: out, html: lottable.outerHTML };
+      });
+
+      // One-time session use (avoid stale captcha/cookies)
+      this.gstPortalSessions.delete(sessionId);
+
+      return {
+        code: HttpStatus.OK,
+        message: 'GST portal details fetched successfully',
+        data: {
+          gstNumber: session.gstNumber,
+          sourceUrl: url,
+          extractedAt: new Date().toISOString(),
+          details,
+          html,
+        },
+      };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  async gstSearch(gstNumber: string): Promise<APIResponseInterface<GstScrapeResult>> {
+    const gst = gstNumber.trim().toUpperCase();
+    const baseUrl = 'https://www.knowyourgst.com/gst-number-search/';
+    const url = `${baseUrl}?gstnum=${encodeURIComponent(gst)}`;
+
+    const browser = await this.launchBrowser();
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(45_000);
+      page.setDefaultTimeout(20_000);
+
+      // Load page (query param may or may not populate results). If results table not present,
+      // fill the form and submit to get the table.
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+      const resultsSelector = 'table.questionlist tbody tr';
+      const hasResults = await page.$(resultsSelector);
+      if (!hasResults) {
+        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('input#gstnumber', { timeout: 20_000 });
+        await page.evaluate((value) => {
+          const input = document.querySelector('input#gstnumber') as HTMLInputElement | null;
+          if (!input) return;
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }, gst);
+
+        const navigationPromise = page
+          .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 })
+          .catch(() => undefined);
+        const clickPromise = page
+          .click('form[action="/gst-number-search/"] input[type="submit"]')
+          .catch(() => undefined);
+        await Promise.all([navigationPromise, clickPromise]);
+      }
+
+      await page.waitForSelector(resultsSelector, { timeout: 20_000 });
+
+      // Extract only the GST details table shown in UI (avoid login modal tables).
+      const fields = await page.evaluate(() => {
+        const result: Record<string, string> = {};
+        const rows = Array.from(
+          document.querySelectorAll('table.questionlist tbody tr'),
+        ) as HTMLTableRowElement[];
+
+        for (const tr of rows) {
+          const tds = Array.from(tr.querySelectorAll('td')).map((td) =>
+            (td.textContent ?? '').replace(/\s+/g, ' ').trim(),
+          );
+          if (tds.length >= 2 && tds[0] && tds[1]) {
+            result[tds[0]] = tds[1];
+          }
+        }
+        return result;
+      });
+
+      const normalizedFields: Record<string, string> = {};
+      for (const [k, v] of Object.entries(fields ?? {})) {
+        const nk = this.normalizeText(k);
+        const nv = this.normalizeText(v);
+        if (nk && nv) normalizedFields[nk] = nv;
+      }
+
+      if (Object.keys(normalizedFields).length === 0) {
+        throw new ServiceUnavailableException(
+          'KnowYourGST returned no GST detail fields — page structure may have changed or the request was blocked',
+        );
+      }
+
+      return {
+        code: HttpStatus.OK,
+        message: 'GST details fetched successfully',
+        data: {
+          gstNumber: gst,
+          sourceUrl: url,
+          extractedAt: new Date().toISOString(),
+          fields: normalizedFields,
+        },
+      };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  async pincodeLookup(pincodeInput: string): Promise<APIResponseInterface<PincodeLookupResult>> {
+    const pincode = pincodeInput.replace(/\D/g, '').slice(0, 6);
+    if (pincode.length !== 6) {
+      throw new BadRequestException('Pincode must be exactly 6 digits');
+    }
+
+    const url = `https://api.postalpincode.in/pincode/${pincode}`;
+    let json: unknown;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new ServiceUnavailableException('Pincode API request failed');
+      }
+      json = await res.json();
+    } catch (error: any) {
+      if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException(
+        error?.message ?? 'Pincode API request failed',
+      );
+    }
+
+    const first = Array.isArray(json) ? json[0] : json;
+    const status = (first as { Status?: string })?.Status;
+    const postOffices = (first as { PostOffice?: PincodePostOffice[] })?.PostOffice ?? [];
+    if (status !== 'Success' || !postOffices.length) {
+      throw new NotFoundException(`No post office data found for pincode ${pincode}`);
+    }
+
+    const primary = postOffices[0];
+    const fields: Record<string, string> = {
+      'Post Office': this.normalizeText(primary.Name),
+      'Branch Type': this.normalizeText(primary.BranchType),
+      'Delivery Status': this.normalizeText(primary.DeliveryStatus),
+      Circle: this.normalizeText(primary.Circle),
+      District: this.normalizeText(primary.District),
+      Division: this.normalizeText(primary.Division),
+      Region: this.normalizeText(primary.Region),
+      Block: this.normalizeText(primary.Block),
+      State: this.normalizeText(primary.State),
+      Country: this.normalizeText(primary.Country),
+      Pincode: this.normalizeText(primary.Pincode),
+    };
+    if (postOffices.length > 1) {
+      fields['Post Offices Found'] = String(postOffices.length);
+    }
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Pincode details fetched successfully',
+      data: {
+        pincode,
+        sourceUrl: url,
+        extractedAt: new Date().toISOString(),
+        message: this.normalizeText((first as { Message?: string })?.Message),
+        postOffices,
+        fields,
+      },
+    };
+  }
+
+  /**
+   * Domain WHOIS: prefer https://who.is/whois/{domain}, fall back to whois.com.
+   */
+  async whoisSearch(domainInput: string): Promise<APIResponseInterface<WhoisScrapeResult>> {
+    const domain = this.normalizeDomain(domainInput);
+    if (!domain) {
+      throw new BadRequestException('Domain is required');
+    }
+
+    const browser = await this.launchBrowser();
+    try {
+      try {
+        const whoIs = await this.scrapeWhoIs(browser, domain);
+        if (Object.keys(whoIs.fields).length > 0) {
+          return {
+            code: HttpStatus.OK,
+            message: 'WHOIS details fetched successfully from who.is',
+            data: whoIs,
+          };
+        }
+      } catch (whoIsErr: any) {
+        console.warn(
+          `[WHOIS] who.is failed for ${domain}: ${whoIsErr?.message ?? whoIsErr}`,
+        );
+      }
+
+      const whoisCom = await this.scrapeWhoisCom(browser, domain);
+      if (!whoisCom?.fields || Object.keys(whoisCom.fields).length === 0) {
+        throw new ServiceUnavailableException(
+          `WHOIS returned no fields for ${domain} — selectors may have changed or the domain has no public WHOIS`,
+        );
+      }
+      return {
+        code: HttpStatus.OK,
+        message: 'WHOIS details fetched successfully from whois.com',
+        data: whoisCom,
+      };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  }
+
+  /** Canonical aliases so digital report helpers resolve dates/registrar consistently. */
+  private aliasWhoisFields(fields: Record<string, string>): Record<string, string> {
+    const out = { ...fields };
+    const lower = new Map(
+      Object.entries(fields).map(([k, v]) => [k.toLowerCase(), v] as const),
+    );
+    const pick = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = lower.get(k.toLowerCase());
+        if (v) return v;
+      }
+      return null;
+    };
+    const setIf = (key: string, value: string | null) => {
+      if (value && !out[key]) out[key] = value;
+    };
+    setIf('Registrar', pick('Registrar', 'Registrar Name', 'Sponsoring Registrar'));
+    setIf(
+      'Creation Date',
+      pick('Creation Date', 'Created', 'Created On', 'Registered On', 'Domain Registration Date'),
+    );
+    setIf('Registered On', pick('Registered On', 'Creation Date', 'Created', 'Created On'));
+    setIf(
+      'Registry Expiry Date',
+      pick('Registry Expiry Date', 'Expires', 'Expires On', 'Expiry Date', 'Registrar Registration Expiration Date'),
+    );
+    setIf('Expires On', pick('Expires On', 'Expires', 'Registry Expiry Date', 'Expiry Date'));
+    setIf('Updated Date', pick('Updated Date', 'Updated', 'Last Updated'));
+    setIf(
+      'Name Server',
+      pick('Name Server', 'Nameservers', 'Name Servers', 'Nserver'),
+    );
+    setIf('Domain Status', pick('Domain Status', 'Status'));
+    setIf('Registrant Organization', pick('Registrant Organization', 'Organization', 'Org'));
+    setIf('IP Address', pick('IP Address', 'IP'));
+    return out;
+  }
+
+  private async scrapeWhoIs(
+    browser: Browser,
+    domain: string,
+  ): Promise<WhoisScrapeResult> {
+    const url = `https://who.is/whois/${encodeURIComponent(domain)}`;
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(45_000);
+    page.setDefaultTimeout(25_000);
+    try {
+      await page.setUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      );
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await new Promise((r) => setTimeout(r, 1_200));
+
+      const extracted = await page.evaluate(() => {
+        const result: Record<string, string> = {};
+        const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+        const addPair = (key: string, value: string) => {
+          const k = clean(key).replace(/:$/, '');
+          const v = clean(value);
+          if (!k || !v) return;
+          if (/security check|information blocked|captcha/i.test(k)) return;
+          if (/information blocked/i.test(v)) return;
+          result[k] = v;
+        };
+
+        const bodyText = document.body?.innerText ?? '';
+        if (/information blocked/i.test(bodyText) && bodyText.length < 800) {
+          return { blocked: true, fields: {} as Record<string, string> };
+        }
+
+        // who.is section cards: label above value
+        document.querySelectorAll('h2, h3, h4').forEach((heading) => {
+          const title = clean(heading.textContent ?? '');
+          if (!/registrar|important dates|nameserver|domain status|contact/i.test(title)) {
+            return;
+          }
+          let el = heading.nextElementSibling;
+          let hops = 0;
+          while (el && hops < 8) {
+            const rows = el.querySelectorAll(
+              '.row, .queryResponseBodyRow, li, p, div',
+            );
+            if (rows.length) {
+              rows.forEach((row) => {
+                const strong = row.querySelector('strong, b, .key, .label, dt');
+                if (strong) {
+                  const label = strong.textContent ?? '';
+                  const value = clean(
+                    (row.textContent ?? '').replace(label, ''),
+                  );
+                  addPair(label, value);
+                }
+              });
+            }
+            el = el.nextElementSibling;
+            hops += 1;
+          }
+        });
+
+        document.querySelectorAll('dl').forEach((dl) => {
+          dl.querySelectorAll('dt').forEach((dt) => {
+            const dd = dt.nextElementSibling;
+            if (dd?.tagName === 'DD') {
+              addPair(dt.textContent ?? '', dd.textContent ?? '');
+            }
+          });
+        });
+
+        document.querySelectorAll('table tr').forEach((tr) => {
+          const cells = Array.from(tr.querySelectorAll('th, td')).map((c) =>
+            clean(c.textContent ?? ''),
+          );
+          if (cells.length >= 2 && cells[0] && cells[1]) {
+            addPair(cells[0], cells[1]);
+          }
+        });
+
+        // Explicit who.is labels often appear as standalone lines
+        const labelValuePatterns: Array<[RegExp, string]> = [
+          [/Registrar\s*\n+\s*(.+)/i, 'Registrar'],
+          [/WHOIS Server\s*\n+\s*(.+)/i, 'WHOIS Server'],
+          [/Referral URL\s*\n+\s*(.+)/i, 'Referral URL'],
+          [/Created\s*\n+\s*(.+)/i, 'Created'],
+          [/Updated\s*\n+\s*(.+)/i, 'Updated'],
+          [/Expires\s*\n+\s*(.+)/i, 'Expires'],
+          [/IP Address:\s*(.+)/i, 'IP Address'],
+        ];
+        for (const [re, key] of labelValuePatterns) {
+          const m = bodyText.match(re);
+          if (m?.[1]) addPair(key, m[1].split('\n')[0] ?? m[1]);
+        }
+
+        // Nameserver hostnames from table
+        const nsHosts: string[] = [];
+        document.querySelectorAll('table tr').forEach((tr) => {
+          const tds = Array.from(tr.querySelectorAll('td')).map((c) =>
+            clean(c.textContent ?? ''),
+          );
+          if (tds[0] && /\./.test(tds[0]) && !/hostname/i.test(tds[0])) {
+            nsHosts.push(tds[0]);
+          }
+        });
+        if (nsHosts.length) {
+          addPair('Nameservers', nsHosts.join(', '));
+        }
+
+        const statuses = Array.from(
+          document.querySelectorAll('li, .domain-status, .status'),
+        )
+          .map((n) => clean(n.textContent ?? ''))
+          .filter((t) => /prohibited|ok|client|server/i.test(t) && t.length < 120);
+        if (statuses.length) {
+          addPair('Domain Status', [...new Set(statuses)].slice(0, 8).join('; '));
+        }
+
+        return { blocked: false, fields: result };
+      });
+
+      if (extracted.blocked) {
+        throw new ServiceUnavailableException(
+          'who.is blocked WHOIS access for this domain',
+        );
+      }
+
+      const normalizedFields: Record<string, string> = {};
+      for (const [k, v] of Object.entries(extracted.fields ?? {})) {
+        const nk = this.normalizeText(k);
+        const nv = this.normalizeText(v);
+        if (nk && nv) normalizedFields[nk] = nv;
+      }
+
+      const fields = this.aliasWhoisFields(normalizedFields);
+      if (Object.keys(fields).length === 0) {
+        throw new ServiceUnavailableException(
+          'who.is returned no WHOIS fields for this domain',
+        );
+      }
+
+      return {
+        domain,
+        sourceUrl: url,
+        extractedAt: new Date().toISOString(),
+        fields,
+      };
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  private async scrapeWhoisCom(
+    browser: Browser,
+    domain: string,
+  ): Promise<WhoisScrapeResult> {
+    const url = `https://www.whois.com/whois/${encodeURIComponent(domain)}`;
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(45_000);
+    page.setDefaultTimeout(20_000);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+      const resultsSelector = '.df-block, .df-row, #lookup-results, .whois-data';
+      let hasResults = !!(await page.$(resultsSelector));
+
+      if (!hasResults) {
+        const searchSelectors = [
+          'input[name="domain"]',
+          'input#domain',
+          'input[type="search"]',
+          'form input[type="text"]',
+        ];
+        for (const selector of searchSelectors) {
+          const input = await page.$(selector);
+          if (!input) continue;
+          await page.evaluate(
+            (sel, value) => {
+              const el = document.querySelector(sel) as HTMLInputElement | null;
+              if (!el) return;
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            },
+            selector,
+            domain,
+          );
+          const navigationPromise = page
+            .waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 })
+            .catch(() => undefined);
+          const submitPromise = page
+            .evaluate((sel) => {
+              const el = document.querySelector(sel) as HTMLInputElement | null;
+              const form = el?.closest('form');
+              if (form) {
+                form.requestSubmit();
+                return;
+              }
+              el?.dispatchEvent(
+                new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+              );
+            }, selector)
+            .catch(() => undefined);
+          await Promise.all([navigationPromise, submitPromise]);
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+          hasResults = !!(await page.$(resultsSelector));
+          if (hasResults) break;
+        }
+      }
+
+      await page.waitForSelector(resultsSelector, { timeout: 20_000 }).catch(() => undefined);
+
+      const fields = await page.evaluate(() => {
+        const result: Record<string, string> = {};
+        const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+        const addPair = (key: string, value: string) => {
+          const k = clean(key).replace(/:$/, '');
+          const v = clean(value);
+          if (k && v && !/^security check$/i.test(k)) {
+            result[k] = v;
+          }
+        };
+
+        document.querySelectorAll('.df-block').forEach((block) => {
+          const label = block.querySelector('.df-label, .df-key, dt');
+          const value = block.querySelector('.df-value, .df-val, dd');
+          if (label && value) {
+            addPair(label.textContent ?? '', value.textContent ?? '');
+          }
+        });
+
+        document.querySelectorAll('.df-row').forEach((row) => {
+          const label = row.querySelector('.df-label, .df-key, th, strong');
+          const value = row.querySelector('.df-value, .df-val, td:last-child, span:last-child');
+          if (label && value && label !== value) {
+            addPair(label.textContent ?? '', value.textContent ?? '');
+          }
+        });
+
+        document.querySelectorAll('dl').forEach((dl) => {
+          dl.querySelectorAll('dt').forEach((dt) => {
+            const dd = dt.nextElementSibling;
+            if (dd?.tagName === 'DD') {
+              addPair(dt.textContent ?? '', dd.textContent ?? '');
+            }
+          });
+        });
+
+        document.querySelectorAll('table tr').forEach((tr) => {
+          const cells = Array.from(tr.querySelectorAll('th, td')).map((cell) =>
+            clean(cell.textContent ?? ''),
+          );
+          if (cells.length >= 2 && cells[0] && cells[1]) {
+            addPair(cells[0], cells[1]);
+          }
+        });
+
+        return result;
+      });
+
+      const normalizedFields: Record<string, string> = {};
+      for (const [k, v] of Object.entries(fields ?? {})) {
+        const nk = this.normalizeText(k);
+        const nv = this.normalizeText(v);
+        if (nk && nv) normalizedFields[nk] = nv;
+      }
+
+      const aliased = this.aliasWhoisFields(normalizedFields);
+      if (Object.keys(aliased).length === 0) {
+        throw new ServiceUnavailableException(
+          'WHOIS lookup returned no data for this domain',
+        );
+      }
+
+      return {
+        domain,
+        sourceUrl: url,
+        extractedAt: new Date().toISOString(),
+        fields: aliased,
+      };
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Probe one public/gov portal URL (used by digital + OCR enrichment).
+   * Captures reachability + lightweight page response fields (title / meta / H1 / snippet).
+   * Does not submit captcha-protected search forms — that needs dedicated scrapers (GST, WHOIS, …).
+   */
+  async checkPortalSite(
+    url: string,
+    options?: { timeoutMs?: number },
+  ): Promise<{
+    url: string;
+    finalUrl: string;
+    success: boolean;
+    httpStatus: number | null;
+    title: string | null;
+    metaDescription: string | null;
+    heading: string | null;
+    textSnippet: string | null;
+    responseFields: Record<string, string>;
+    durationMs: number;
+    error?: string;
+    checkedAt: string;
+  }> {
+    const timeoutMs = options?.timeoutMs ?? 10_000;
+    const started = Date.now();
+    const checkedAt = new Date().toISOString();
+    const target = String(url || '').trim();
+    if (!target || !/^https?:\/\//i.test(target)) {
+      return {
+        url: target,
+        finalUrl: target,
+        success: false,
+        httpStatus: null,
+        title: null,
+        metaDescription: null,
+        heading: null,
+        textSnippet: null,
+        responseFields: {},
+        durationMs: 0,
+        error: 'Invalid or missing URL',
+        checkedAt,
+      };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(target, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-IN,en;q=0.9',
+        },
+      });
+
+      const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+      let title: string | null = null;
+      let metaDescription: string | null = null;
+      let heading: string | null = null;
+      let textSnippet: string | null = null;
+      const responseFields: Record<string, string> = {};
+
+      if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+        const text = await res.text();
+        const slice = text.slice(0, 120_000);
+        const titleMatch = slice.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        title = titleMatch?.[1]
+          ? this.normalizeText(titleMatch[1]).slice(0, 200)
+          : null;
+
+        const metaMatch =
+          slice.match(
+            /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i,
+          ) ||
+          slice.match(
+            /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i,
+          );
+        metaDescription = metaMatch?.[1]
+          ? this.normalizeText(metaMatch[1]).slice(0, 300)
+          : null;
+
+        const h1Match = slice.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+        heading = h1Match?.[1]
+          ? this.normalizeText(h1Match[1].replace(/<[^>]+>/g, ' ')).slice(0, 200)
+          : null;
+
+        const stripped = slice
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        textSnippet = stripped ? stripped.slice(0, 280) : null;
+
+        if (title) responseFields['Page title'] = title;
+        if (metaDescription) responseFields['Meta description'] = metaDescription;
+        if (heading) responseFields['Heading'] = heading;
+        if (textSnippet) responseFields['Page snippet'] = textSnippet;
+        responseFields['Content type'] = contentType.split(';')[0] || contentType;
+      } else {
+        // Drain body for non-HTML so sockets close cleanly
+        await res.arrayBuffer().catch(() => undefined);
+        responseFields['Content type'] = contentType.split(';')[0] || contentType || 'unknown';
+      }
+
+      const ok = res.status >= 200 && res.status < 400;
+      if (ok) {
+        responseFields['HTTP status'] = String(res.status);
+        responseFields['Final URL'] = res.url || target;
+      }
+
+      return {
+        url: target,
+        finalUrl: res.url || target,
+        success: ok,
+        httpStatus: res.status,
+        title,
+        metaDescription,
+        heading,
+        textSnippet,
+        responseFields,
+        durationMs: Date.now() - started,
+        error: ok ? undefined : `HTTP ${res.status}`,
+        checkedAt,
+      };
+    } catch (err: any) {
+      const aborted = err?.name === 'AbortError';
+      return {
+        url: target,
+        finalUrl: target,
+        success: false,
+        httpStatus: null,
+        title: null,
+        metaDescription: null,
+        heading: null,
+        textSnippet: null,
+        responseFields: {},
+        durationMs: Date.now() - started,
+        error: aborted
+          ? `Timeout after ${timeoutMs}ms`
+          : err?.message ?? 'Portal check failed',
+        checkedAt,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Check portal sites (sequential when concurrency<=1, otherwise bounded parallel).
+   * Digital report historically probed one-by-one; OCR uses concurrency for speed.
+   */
+  async checkPortalSitesSequentially(
+    portals: Array<{
+      id?: string;
+      title: string;
+      state?: string;
+      url: string;
+      categoryName?: string;
+      categoryKey?: string;
+      relevant?: boolean;
+    }>,
+    options?: {
+      timeoutMs?: number;
+      concurrency?: number;
+      onProgress?: (done: number, total: number, title: string) => void;
+    },
+  ): Promise<
+    Array<{
+      id?: string;
+      title: string;
+      state?: string;
+      url: string;
+      categoryName?: string;
+      categoryKey?: string;
+      relevant: boolean;
+      success: boolean;
+      httpStatus: number | null;
+      titleTag: string | null;
+      metaDescription: string | null;
+      heading: string | null;
+      textSnippet: string | null;
+      responseFields: Record<string, string>;
+      finalUrl: string;
+      durationMs: number;
+      error?: string;
+      checkedAt: string;
+    }>
+  > {
+    type PortalCheckRow = {
+      id?: string;
+      title: string;
+      state?: string;
+      url: string;
+      categoryName?: string;
+      categoryKey?: string;
+      relevant: boolean;
+      success: boolean;
+      httpStatus: number | null;
+      titleTag: string | null;
+      metaDescription: string | null;
+      heading: string | null;
+      textSnippet: string | null;
+      responseFields: Record<string, string>;
+      finalUrl: string;
+      durationMs: number;
+      error?: string;
+      checkedAt: string;
+    };
+
+    const list = portals.filter((p) => !!String(p.url || '').trim());
+    const results: PortalCheckRow[] = new Array(list.length);
+    const concurrency = Math.max(1, Math.min(options?.concurrency ?? 1, 8));
+    let nextIndex = 0;
+    let done = 0;
+
+    const worker = async () => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= list.length) return;
+        const p = list[i];
+        const check = await this.checkPortalSite(p.url, {
+          timeoutMs: options?.timeoutMs,
+        });
+        results[i] = {
+          id: p.id,
+          title: p.title,
+          state: p.state,
+          url: p.url,
+          categoryName: p.categoryName,
+          categoryKey: p.categoryKey,
+          relevant: p.relevant !== false,
+          success: check.success,
+          httpStatus: check.httpStatus,
+          titleTag: check.title,
+          metaDescription: check.metaDescription,
+          heading: check.heading,
+          textSnippet: check.textSnippet,
+          responseFields: check.responseFields ?? {},
+          finalUrl: check.finalUrl,
+          durationMs: check.durationMs,
+          error: check.error,
+          checkedAt: check.checkedAt,
+        };
+        done += 1;
+        options?.onProgress?.(done, list.length, p.title);
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, list.length || 1) }, () =>
+        worker(),
+      ),
+    );
+    return results.filter(Boolean);
+  }
+}
+

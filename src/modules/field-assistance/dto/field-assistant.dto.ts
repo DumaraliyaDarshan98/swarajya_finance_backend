@@ -334,8 +334,9 @@ export class UpsertFieldAssistantDto {
   @IsString()
   fieldAgentId?: string;
 
-  @IsIn(['Active', 'Inactive'])
-  status: string;
+  @IsOptional()
+  @IsIn(['Active', 'Inactive', 'Pending'])
+  status?: string;
 
   @IsOptional()
   @IsString()

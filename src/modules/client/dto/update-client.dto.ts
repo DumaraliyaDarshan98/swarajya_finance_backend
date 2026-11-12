@@ -1,4 +1,12 @@
-import { IsEmail, IsOptional, IsString, Matches, ValidateNested } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  ValidateIf,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ClientSettingsDto } from './client-settings.dto';
 
@@ -124,4 +132,9 @@ export class UpdateClientDto {
   @ValidateNested()
   @Type(() => ClientSettingsDto)
   setting?: ClientSettingsDto;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v != null && v !== '')
+  @IsUUID()
+  subscriptionPlanId?: string | null;
 }

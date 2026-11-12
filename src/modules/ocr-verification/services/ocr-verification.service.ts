@@ -1,0 +1,1385 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { join } from 'path';
+import { randomUUID, createHash } from 'crypto';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { OcrVerification } from '../entities/ocr-verification.entity';
+import { ListOcrVerificationQueryDto } from '../dto/list-ocr-verification-query.dto';
+import { UpdateOcrVerificationDto } from '../dto/update-ocr-verification.dto';
+import { APIResponseInterface } from '../../../common/interfaces/response.interface';
+import { OcrService } from '../../verification/services/ocr.service';
+import { OcrNotificationGateway } from '../gateways/ocr-notification.gateway';
+import { RcuTriggersService } from '../../rcu-triggers/services/rcu-triggers.service';
+import { ForensicChecksService } from '../../forensic-checks/services/forensic-checks.service';
+import { detectForensicFileCategory } from '../../forensic-checks/utils/detect-forensic-file-category';
+import { VerificationEnrichmentService } from '../../verification-enrichment/services/verification-enrichment.service';
+import { scrapeInputFromExtractedDocs } from '../../verification-enrichment/helpers/extract-scrape-input.helper';
+import { Role } from '../../../common/enums/role.enum';
+import type {
+  OcrCaseForensicSummary,
+  OcrDocumentEntry,
+  OcrDocumentsPayload,
+  OcrForensicSummary,
+  OcrForensicVerdict,
+  OcrVerificationStatus,
+} from '../interfaces/ocr-documents-payload.interface';
+
+type AuthedUser = { role: Role; clientId?: string };
+
+type UploadedFileLike = {
+  buffer: Buffer;
+  mimetype?: string;
+  originalname?: string;
+};
+
+export const OCR_UPLOAD_DIR = join(process.cwd(), 'uploads', 'ocr-verifications');
+
+/** Maps Gemini identify labels → internal OCR / RCU documentType + display label. */
+const IDENTIFIED_TYPE_MAP: Array<{
+  match: RegExp;
+  documentType: string;
+  label: string;
+}> = [
+  // Udyam / Udyog Aadhaar BEFORE personal Aadhaar — "Udyog Aadhaar" contains "aadhaar".
+  { match: /udyam|udyog\s*aadhaa?r|msme/i, documentType: 'udyam certificate', label: 'Udyam Certificate' },
+  { match: /aadhaar|aadhar|uidai|\bआधार\b/i, documentType: 'aadhaar', label: 'Aadhaar Card' },
+  { match: /\bpan\b/i, documentType: 'pan', label: 'PAN Card' },
+  { match: /voter/i, documentType: 'voter card', label: 'Voter Card' },
+  { match: /leaving\s*certificate|school\s*leaving|transfer\s*certificate|\blc\b/i, documentType: 'leaving certificate', label: 'Leaving Certificate' },
+  { match: /mark\s*sheet|marksheet|statement\s*of\s*marks/i, documentType: 'marksheet', label: 'Marksheet' },
+  { match: /trade\s*licen[cs]e/i, documentType: 'trade license', label: 'Trade License' },
+  // Require "driving" — do NOT match every "license" (Udyam/Trade were mislabeled as DL)
+  { match: /driving\s*licen[cs]e|\bdriving\b/i, documentType: 'driving license', label: 'Driving License' },
+  { match: /passport/i, documentType: 'passport', label: 'Passport' },
+  { match: /salary/i, documentType: 'salary slip', label: 'Salary Slip' },
+  { match: /form\s*16|tds\s*certificate/i, documentType: 'form 16', label: 'Form 16' },
+  { match: /bank\s*statement|account\s*statement/i, documentType: 'bank statement', label: 'Bank Statement' },
+  { match: /\bitr\b/i, documentType: 'itr', label: 'ITR' },
+  { match: /\bgst\b/i, documentType: 'gst', label: 'GST' },
+  { match: /address\s*proof/i, documentType: 'address proof', label: 'Address Proof' },
+  { match: /agreement/i, documentType: 'agreement', label: 'Agreement Copy' },
+  { match: /ownership|partnership\s*deed|deed/i, documentType: 'ownership deed', label: 'Ownership Deed' },
+];
+
+@Injectable()
+export class OcrVerificationService {
+  private readonly logger = new Logger(OcrVerificationService.name);
+
+  constructor(
+    @InjectRepository(OcrVerification)
+    private repo: Repository<OcrVerification>,
+    private ocrService: OcrService,
+    private ocrGateway: OcrNotificationGateway,
+    private rcuTriggersService: RcuTriggersService,
+    private forensicChecksService: ForensicChecksService,
+    private enrichment: VerificationEnrichmentService,
+  ) {}
+
+  private ensureUploadDir(): void {
+    if (!existsSync(OCR_UPLOAD_DIR)) {
+      mkdirSync(OCR_UPLOAD_DIR, { recursive: true });
+    }
+  }
+
+  private sanitizeFilename(name: string): string {
+    return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
+  }
+
+  private emptyDocumentEntry(def: {
+    key: string;
+    label: string;
+    placeholder: string;
+    documentType: string;
+  }): OcrDocumentEntry {
+    return {
+      key: def.key,
+      label: def.label,
+      placeholder: def.placeholder,
+      fileName: null,
+      storedFileName: null,
+      mimeType: null,
+      documentType: def.documentType,
+      extractedData: null,
+      extractedText: null,
+      confidence: null,
+      triggerResults: null,
+      checks: null,
+      isValid: null,
+      ocrSuccess: false,
+      ocrError: null,
+      uploadedAt: null,
+      validationStatus: null,
+      validationStatusLabel: null,
+      validationReport: null,
+      identifyConfidence: null,
+      identificationAccepted: null,
+      identificationUncertain: null,
+    };
+  }
+
+  private defaultPayload(): OcrDocumentsPayload {
+    return {
+      documents: [],
+      extraDocuments: [],
+      mergedFile: null,
+    };
+  }
+
+  /** Deep-clone JSON payload so TypeORM always persists a fresh value (avoids silent NULL JSON writes). */
+  private clonePayload(payload: OcrDocumentsPayload): OcrDocumentsPayload {
+    return JSON.parse(JSON.stringify(payload)) as OcrDocumentsPayload;
+  }
+
+  /**
+   * Force-write OCR JSON + status fields via UPDATE.
+   * Nested mutation of the same documentsPayload reference is invisible to TypeORM dirty-checking
+   * and was wiping documents_payload to NULL after report generation.
+   */
+  private async persistOcrProgress(
+    record: OcrVerification,
+    payload: OcrDocumentsPayload,
+    patch: Partial<
+      Pick<
+        OcrVerification,
+        | 'status'
+        | 'progressMessage'
+        | 'reportGeneratedAt'
+        | 'scrapePayload'
+        | 'derivedScrapeInput'
+      >
+    > = {},
+  ): Promise<void> {
+    Object.assign(record, patch);
+    const cloned = this.clonePayload(payload);
+    record.documentsPayload = cloned;
+
+    // TypeORM QueryDeepPartialEntity rejects Record<string, unknown> JSON column shapes.
+    await this.repo.update({ id: record.id }, {
+      documentsPayload: cloned,
+      status: record.status,
+      progressMessage: record.progressMessage,
+      reportGeneratedAt: record.reportGeneratedAt,
+      scrapePayload: record.scrapePayload,
+      derivedScrapeInput: record.derivedScrapeInput,
+    } as never);
+  }
+
+  private normalizeIdentifiedType(raw: string): { documentType: string; label: string } {
+    const text = (raw || '').trim() || 'Other';
+    for (const row of IDENTIFIED_TYPE_MAP) {
+      if (row.match.test(text)) {
+        return { documentType: row.documentType, label: row.label };
+      }
+    }
+    if (/^other$/i.test(text) || /^unknown$/i.test(text)) {
+      return { documentType: 'other', label: 'Other Document' };
+    }
+    return { documentType: text.toLowerCase(), label: text };
+  }
+
+  /**
+   * Coarse document family used to block cross-type RCU remaps
+   * (e.g. identified Udyam must never become Aadhaar Card via fuzzy match).
+   */
+  private documentTypeFamily(raw: string): string | null {
+    const t = (raw || '').toLowerCase();
+    if (!t.trim()) return null;
+    if (/udyam|udyog\s*aadhaa?r|msme/.test(t)) return 'udyam';
+    if (/aadhaar|aadhar|uidai|\bआधार\b/.test(t)) return 'aadhaar';
+    if (/\bpan\b/.test(t)) return 'pan';
+    if (/voter/.test(t)) return 'voter';
+    if (/driving/.test(t)) return 'dl';
+    if (/passport/.test(t)) return 'passport';
+    if (/leaving|mark\s*sheet|marksheet/.test(t)) return 'education';
+    if (/salary|form\s*16|bank|itr|gst|trade/.test(t)) return 'financial';
+    return null;
+  }
+
+  /**
+   * RCU keys like `bank_stmt_manual` must not be sent to OCR as-is —
+   * extraction prompts match on canonical types ("bank statement", "salary slip", …).
+   */
+  private resolveOcrExtractionDocumentType(
+    matchedKey: string | null | undefined,
+    identifiedType: string,
+    matchedLabel?: string | null,
+  ): string {
+    const identified = (identifiedType || '').trim().toLowerCase();
+
+    // Trust OCR identify when it already resolved a specific type (prevents Udyam→Aadhaar remap).
+    if (/udyam|udyog\s*aadhaa?r|msme/.test(identified)) return 'udyam certificate';
+    if (/aadhaar|aadhar|uidai|\bआधार\b/.test(identified)) return 'aadhaar';
+
+    const blob = `${matchedKey ?? ''} ${matchedLabel ?? ''} ${identified}`.toLowerCase();
+
+    // Udyam / Udyog Aadhaar before personal Aadhaar.
+    if (/udyam|udyog\s*aadhaa?r|msme/.test(blob)) return 'udyam certificate';
+    if (/aadhaar|aadhar|uidai|\bआधार\b/.test(blob)) return 'aadhaar';
+    if (/\bpan\b|pancard|pan card/.test(blob)) return 'pan';
+    if (/voter/.test(blob)) return 'voter card';
+    if (/leaving\s*certificate|school\s*leaving|transfer\s*certificate/.test(blob)) {
+      return 'leaving certificate';
+    }
+    if (/mark\s*sheet|marksheet|statement\s*of\s*marks/.test(blob)) return 'marksheet';
+    if (/trade\s*licen[cs]e/.test(blob)) return 'trade license';
+    if (/driving\s*licen[cs]e|\bdriving\b/.test(blob)) return 'driving license';
+    if (/passport/.test(blob)) return 'passport';
+    if (/salary|payslip|pay\s*slip/.test(blob)) return 'salary slip';
+    if (/form\s*16|form16|tds\s*certificate/.test(blob)) return 'form 16';
+    if (/bank|passbook|account\s*stmt|account\s*statement/.test(blob)) {
+      return 'bank statement';
+    }
+    if (/\bitr\b|income\s*tax/.test(blob)) return 'itr';
+    if (/\bgst\b/.test(blob)) return 'gst';
+
+    if (identified && identified !== 'other') return identified;
+
+    if (matchedKey && matchedKey !== 'other') {
+      return matchedKey.replace(/[_-]+/g, ' ').trim().toLowerCase();
+    }
+    return identified || 'other';
+  }
+
+  private unlinkStoredFile(storedFileName: string | null | undefined): void {
+    if (!storedFileName?.trim()) return;
+    const filePath = join(OCR_UPLOAD_DIR, storedFileName);
+    if (existsSync(filePath)) {
+      try {
+        unlinkSync(filePath);
+      } catch (err) {
+        this.logger.warn(`Failed to delete OCR file ${storedFileName}`, err as Error);
+      }
+    }
+  }
+
+  /** Bounded parallel map — keeps OCR multi-doc cases fast without flooding Gemini. */
+  private async mapWithConcurrency<T>(
+    items: T[],
+    concurrency: number,
+    worker: (item: T, index: number) => Promise<void>,
+  ): Promise<void> {
+    const limit = Math.max(1, Math.min(concurrency, items.length || 1));
+    let next = 0;
+    const run = async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        await worker(items[i], i);
+      }
+    };
+    await Promise.all(Array.from({ length: limit }, () => run()));
+  }
+
+  /** Drop legacy empty fixed slots so the list is only uploaded files. */
+  private compactPayloadDocuments(payload: OcrDocumentsPayload): void {
+    payload.documents = (payload.documents ?? []).filter((d) => !!d.storedFileName);
+    payload.extraDocuments = (payload.extraDocuments ?? []).filter((d) => !!d.storedFileName);
+  }
+
+  private allUploadedDocs(payload: OcrDocumentsPayload): OcrDocumentEntry[] {
+    return [...(payload.documents ?? []), ...(payload.extraDocuments ?? [])].filter(
+      (d) => !!d.storedFileName,
+    );
+  }
+
+  private async findOwned(id: string, user: AuthedUser): Promise<OcrVerification> {
+    const record = await this.repo.findOne({ where: { id } });
+    if (!record) {
+      throw new NotFoundException('OCR verification not found');
+    }
+    if (user.role !== Role.SUPER_ADMIN && record.clientId !== user.clientId) {
+      throw new ForbiddenException('You can only access your own client OCR verifications');
+    }
+    return record;
+  }
+
+  private payloadOf(record: OcrVerification): OcrDocumentsPayload {
+    return record.documentsPayload ?? this.defaultPayload();
+  }
+
+  private pickOcrPayload(ocrResponse: Record<string, unknown>): {
+    extractedData: Record<string, unknown> | null;
+    extractedText: string | null;
+    confidence: Record<string, number> | null;
+    triggerResults: any[] | null;
+    checks: any[] | null;
+    isValid: boolean | null;
+    validationStatus: OcrDocumentEntry['validationStatus'];
+    validationStatusLabel: string | null;
+    validationReport: OcrDocumentEntry['validationReport'];
+    identifyConfidence: number | null;
+    fileHash: string | null;
+    fileSizeBytes: number | null;
+    pdfMetadata: Record<string, unknown> | null;
+    forensicSignals: any[] | null;
+    forensicSummary: OcrForensicSummary | null;
+  } {
+    const data =
+      ocrResponse &&
+      typeof ocrResponse === 'object' &&
+      'data' in ocrResponse &&
+      !('extractedData' in ocrResponse) &&
+      !('triggerResults' in ocrResponse) &&
+      !('forensicSummary' in ocrResponse)
+        ? (ocrResponse.data as Record<string, unknown>)
+        : ocrResponse;
+
+    if (!data || typeof data !== 'object') {
+      return {
+        extractedData: null,
+        extractedText: null,
+        confidence: null,
+        triggerResults: null,
+        checks: null,
+        isValid: null,
+        validationStatus: null,
+        validationStatusLabel: null,
+        validationReport: null,
+        identifyConfidence: null,
+        fileHash: null,
+        fileSizeBytes: null,
+        pdfMetadata: null,
+        forensicSignals: null,
+        forensicSummary: null,
+      };
+    }
+
+    const extractedData =
+      data.extractedData && typeof data.extractedData === 'object'
+        ? (data.extractedData as Record<string, unknown>)
+        : null;
+
+    let extractedText: string | null = null;
+    if (typeof data.extractedText === 'string') {
+      extractedText = data.extractedText;
+    } else if (data.extractedText != null) {
+      extractedText = JSON.stringify(data.extractedText);
+    }
+
+    const confidence =
+      data.confidence && typeof data.confidence === 'object'
+        ? (data.confidence as Record<string, number>)
+        : null;
+
+    const triggerResults = Array.isArray(data.triggerResults) ? data.triggerResults : null;
+    const checks = Array.isArray(data.checks) ? data.checks : null;
+    const isValid = typeof data.isValid === 'boolean' ? data.isValid : null;
+    const rawStatus = String(data.validationStatus ?? '').toUpperCase();
+    const validationStatus =
+      rawStatus === 'VALID' ||
+      rawStatus === 'NEEDS_REVIEW' ||
+      rawStatus === 'INVALID' ||
+      rawStatus === 'PROCESSING_FAILED'
+        ? (rawStatus as NonNullable<OcrDocumentEntry['validationStatus']>)
+        : null;
+    const validationStatusLabel =
+      typeof data.validationStatusLabel === 'string'
+        ? data.validationStatusLabel
+        : validationStatus
+          ? validationStatus.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+          : null;
+    const validationReport =
+      data.validationReport && typeof data.validationReport === 'object'
+        ? (data.validationReport as OcrDocumentEntry['validationReport'])
+        : null;
+    const identifyConfidence =
+      typeof data.identifyConfidence === 'number' && Number.isFinite(data.identifyConfidence)
+        ? data.identifyConfidence
+        : null;
+    const fileHash = typeof data.fileHash === 'string' ? data.fileHash : null;
+    const fileSizeBytes =
+      typeof data.fileSizeBytes === 'number' ? data.fileSizeBytes : null;
+    const pdfMetadata =
+      data.pdfMetadata && typeof data.pdfMetadata === 'object'
+        ? (data.pdfMetadata as Record<string, unknown>)
+        : null;
+    const forensicSignals = Array.isArray(data.forensicSignals)
+      ? data.forensicSignals
+      : null;
+    const forensicSummary =
+      data.forensicSummary && typeof data.forensicSummary === 'object'
+        ? (data.forensicSummary as OcrForensicSummary)
+        : null;
+
+    return {
+      extractedData,
+      extractedText,
+      confidence,
+      triggerResults,
+      checks,
+      isValid,
+      validationStatus,
+      validationStatusLabel,
+      validationReport,
+      identifyConfidence,
+      fileHash,
+      fileSizeBytes,
+      pdfMetadata,
+      forensicSignals,
+      forensicSummary,
+    };
+  }
+
+  private saveFileToDisk(file: UploadedFileLike): { storedFileName: string; fileHash: string } {
+    this.ensureUploadDir();
+    const original = file.originalname || 'file';
+    const ext = original.includes('.') ? original.split('.').pop() : 'bin';
+    const base = original.replace(/\.[^/.]+$/, '');
+    const storedFileName = `${randomUUID()}-${this.sanitizeFilename(base)}.${ext}`;
+    writeFileSync(join(OCR_UPLOAD_DIR, storedFileName), file.buffer);
+    const fileHash = createHash('sha256').update(file.buffer).digest('hex');
+    return { storedFileName, fileHash };
+  }
+
+  private fuseCaseForensicSummary(docs: OcrDocumentEntry[]): OcrCaseForensicSummary | null {
+    const withSummary = docs.filter((d) => d.forensicSummary);
+    if (!withSummary.length) return null;
+
+    let worst = withSummary[0];
+    for (const d of withSummary) {
+      const dScore = d.forensicSummary!.riskScore ?? 0;
+      const wScore = worst.forensicSummary!.riskScore ?? 0;
+      const dRank = this.verdictRank(d.forensicSummary!.verdict);
+      const wRank = this.verdictRank(worst.forensicSummary!.verdict);
+      if (dScore > wScore || (dScore === wScore && dRank > wRank)) {
+        worst = d;
+      }
+    }
+
+    const reasons = withSummary
+      .flatMap((d) =>
+        (d.forensicSummary?.reasons ?? []).map((r) => `${d.label}: ${r}`),
+      )
+      .slice(0, 15);
+
+    return {
+      riskScore: worst.forensicSummary!.riskScore,
+      verdict: worst.forensicSummary!.verdict,
+      verdictLabel: worst.forensicSummary!.verdictLabel,
+      reasons,
+      documentCount: docs.length,
+      worstDocumentKey: worst.key,
+    };
+  }
+
+  private verdictRank(v: OcrForensicVerdict | undefined): number {
+    switch (v) {
+      case 'TEMP':
+        return 5;
+      case 'SUSPICIOUS':
+        return 4;
+      case 'MANUAL_REVIEW':
+        return 3;
+      case 'LIKELY_GENUINE':
+        return 2;
+      case 'GENUINE':
+        return 1;
+      default:
+        return 0;
+    }
+  }
+
+  private inferMimeType(fileName: string | null | undefined): string | null {
+    const ext = (fileName ?? '').split('.').pop()?.toLowerCase() ?? '';
+    const mimeMap: Record<string, string> = {
+      pdf: 'application/pdf',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      jfif: 'image/jpeg',
+      png: 'image/png',
+      webp: 'image/webp',
+    };
+    return mimeMap[ext] ?? null;
+  }
+
+  async list(
+    query: ListOcrVerificationQueryDto,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification[]>> {
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 10));
+    const skip = (page - 1) * limit;
+    const sortBy = query.sortBy ?? 'updatedAt';
+    const sortDir = query.sortDir ?? 'DESC';
+
+    const qb = this.repo
+      .createQueryBuilder('ov')
+      .orderBy(`ov.${sortBy}`, sortDir as 'ASC' | 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    if (user.role === Role.SUPER_ADMIN) {
+      qb.leftJoinAndSelect('ov.client', 'client');
+      if (query.clientId?.trim()) {
+        qb.andWhere('ov.client_id = :filterClientId', {
+          filterClientId: query.clientId.trim(),
+        });
+      }
+    } else {
+      qb.andWhere('ov.client_id = :clientId', { clientId: user.clientId });
+    }
+
+    if (query.search?.trim()) {
+      const term = `%${query.search.trim()}%`;
+      qb.andWhere('CAST(ov.documents_payload AS CHAR) LIKE :term', { term });
+    }
+
+    if (query.status) {
+      qb.andWhere('ov.status = :status', { status: query.status });
+    }
+
+    const [list, total] = await qb.getManyAndCount();
+    return {
+      code: HttpStatus.OK,
+      message: 'OCR verifications fetched successfully',
+      data: list,
+      pagination: { total, page, pagePerRecord: limit },
+    };
+  }
+
+  async stats(
+    user: AuthedUser,
+    clientIdFilter?: string,
+  ): Promise<
+    APIResponseInterface<{
+      total: number;
+      draft: number;
+      inProgress: number;
+      reportGenerated: number;
+      failed: number;
+    }>
+  > {
+    const scopedClientId =
+      user.role === Role.SUPER_ADMIN
+        ? clientIdFilter?.trim() || undefined
+        : user.clientId;
+
+    const baseQb = this.repo.createQueryBuilder('ov');
+    if (scopedClientId) {
+      baseQb.where('ov.client_id = :clientId', { clientId: scopedClientId });
+    }
+
+    const total = await baseQb.getCount();
+
+    const rowsQb = this.repo
+      .createQueryBuilder('ov')
+      .select('ov.status', 'status')
+      .addSelect('COUNT(*)', 'count');
+    if (scopedClientId) {
+      rowsQb.where('ov.client_id = :clientId', { clientId: scopedClientId });
+    }
+    const rows = await rowsQb
+      .groupBy('ov.status')
+      .getRawMany<{ status: OcrVerificationStatus; count: string }>();
+
+    const byStatus = new Map(rows.map((r) => [r.status, Number(r.count) || 0]));
+
+    return {
+      code: HttpStatus.OK,
+      message: 'OCR verification stats fetched successfully',
+      data: {
+        total,
+        draft: byStatus.get('DRAFT') ?? 0,
+        inProgress: byStatus.get('IN_PROGRESS') ?? 0,
+        reportGenerated: byStatus.get('REPORT_GENERATED') ?? 0,
+        failed: byStatus.get('FAILED') ?? 0,
+      },
+    };
+  }
+
+  async create(user: AuthedUser): Promise<APIResponseInterface<OcrVerification>> {
+    if (!user.clientId) {
+      throw new ForbiddenException('Client context missing');
+    }
+
+    const entity = this.repo.create({
+      clientId: user.clientId,
+      client: { id: user.clientId } as any,
+      documentsPayload: this.defaultPayload(),
+      status: 'DRAFT',
+      reportGeneratedAt: null,
+    });
+
+    const saved = await this.repo.save(entity);
+    return {
+      code: HttpStatus.CREATED,
+      message: 'OCR verification created successfully',
+      data: saved,
+    };
+  }
+
+  async getById(id: string, user: AuthedUser): Promise<APIResponseInterface<OcrVerification>> {
+    const record = await this.findOwned(id, user);
+    if (user.role === Role.SUPER_ADMIN) {
+      const withClient = await this.repo.findOne({
+        where: { id: record.id },
+        relations: ['client'],
+      });
+      return {
+        code: HttpStatus.OK,
+        message: 'OCR verification fetched successfully',
+        data: withClient ?? record,
+      };
+    }
+    return {
+      code: HttpStatus.OK,
+      message: 'OCR verification fetched successfully',
+      data: record,
+    };
+  }
+
+  async update(
+    id: string,
+    dto: UpdateOcrVerificationDto,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    const record = await this.findOwned(id, user);
+    const payload = this.payloadOf(record);
+
+    if (dto.extraDocuments) {
+      const existingByKey = new Map(payload.extraDocuments.map((d) => [d.key, d]));
+      payload.extraDocuments = dto.extraDocuments.map((slot) => {
+        const prev = existingByKey.get(slot.key);
+        if (prev) return { ...prev, label: slot.label, placeholder: slot.placeholder ?? prev.placeholder };
+        return {
+          ...this.emptyDocumentEntry({
+            key: slot.key,
+            label: slot.label,
+            placeholder: slot.placeholder ?? 'Upload additional document',
+            documentType: 'other',
+          }),
+        };
+      });
+    }
+
+    await this.persistOcrProgress(record, payload);
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
+    return {
+      code: HttpStatus.OK,
+      message: 'OCR verification updated successfully',
+      data: saved,
+    };
+  }
+
+  async uploadDocument(
+    id: string,
+    key: string | undefined,
+    isExtra: boolean,
+    file: UploadedFileLike | undefined,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('No file uploaded');
+    }
+    return this.appendDocuments(id, [file], user, key, isExtra);
+  }
+
+  async appendDocuments(
+    id: string,
+    files: UploadedFileLike[],
+    user: AuthedUser,
+    replaceKey?: string,
+    isExtra = false,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    const validFiles = files.filter((f) => f?.buffer?.length);
+    if (!validFiles.length) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    const record = await this.findOwned(id, user);
+    const payload = this.payloadOf(record);
+    this.compactPayloadDocuments(payload);
+
+    // Legacy: replace an existing slot by key when provided and found.
+    if (replaceKey?.trim() && validFiles.length === 1) {
+      const list = isExtra ? payload.extraDocuments : payload.documents;
+      const doc = list.find((d) => d.key === replaceKey.trim());
+      if (doc) {
+        this.unlinkStoredFile(doc.storedFileName);
+        const file = validFiles[0];
+        const savedFile = this.saveFileToDisk(file);
+        const originalName = file.originalname ?? savedFile.storedFileName;
+        Object.assign(doc, {
+          fileName: originalName,
+          storedFileName: savedFile.storedFileName,
+          mimeType: file.mimetype || this.inferMimeType(originalName),
+          fileHash: savedFile.fileHash,
+          fileSizeBytes: file.buffer.length,
+          extractedData: null,
+          extractedText: null,
+          confidence: null,
+          triggerResults: null,
+          checks: null,
+          isValid: null,
+          ocrSuccess: false,
+          ocrError: null,
+          forensicSignals: null,
+          forensicSummary: null,
+          pdfMetadata: null,
+          uploadedAt: new Date().toISOString(),
+        });
+        await this.persistOcrProgress(record, payload);
+        const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
+        return {
+          code: HttpStatus.OK,
+          message: 'Document uploaded successfully',
+          data: saved,
+        };
+      }
+    }
+
+    for (const file of validFiles) {
+      const savedFile = this.saveFileToDisk(file);
+      const originalName = file.originalname ?? savedFile.storedFileName;
+      const key = `doc_${randomUUID()}`;
+      payload.documents.push({
+        key,
+        label: originalName,
+        placeholder: 'Uploaded document',
+        fileName: originalName,
+        storedFileName: savedFile.storedFileName,
+        mimeType: file.mimetype || this.inferMimeType(originalName),
+        documentType: 'other',
+        extractedData: null,
+        extractedText: null,
+        confidence: null,
+        triggerResults: null,
+        checks: null,
+        isValid: null,
+        ocrSuccess: false,
+        ocrError: null,
+        fileHash: savedFile.fileHash,
+        fileSizeBytes: file.buffer.length,
+        pdfMetadata: null,
+        forensicSignals: null,
+        forensicSummary: null,
+        uploadedAt: new Date().toISOString(),
+      });
+    }
+
+    const resetAfterReport =
+      record.status === 'REPORT_GENERATED' || record.status === 'FAILED';
+    await this.persistOcrProgress(record, payload, {
+      status: resetAfterReport ? 'DRAFT' : record.status,
+      progressMessage: resetAfterReport ? null : record.progressMessage,
+      reportGeneratedAt: resetAfterReport ? null : record.reportGeneratedAt,
+    });
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
+    return {
+      code: HttpStatus.OK,
+      message:
+        validFiles.length > 1
+          ? `${validFiles.length} documents uploaded successfully`
+          : 'Document uploaded successfully',
+      data: saved,
+    };
+  }
+
+  async deleteDocument(
+    id: string,
+    key: string,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    if (!key?.trim()) {
+      throw new BadRequestException('Document key is required');
+    }
+
+    const record = await this.findOwned(id, user);
+    const payload = this.payloadOf(record);
+    const docKey = key.trim();
+
+    const fromMain = payload.documents.findIndex((d) => d.key === docKey);
+    const fromExtra = payload.extraDocuments.findIndex((d) => d.key === docKey);
+
+    let removed: OcrDocumentEntry | undefined;
+    if (fromMain >= 0) {
+      removed = payload.documents.splice(fromMain, 1)[0];
+    } else if (fromExtra >= 0) {
+      removed = payload.extraDocuments.splice(fromExtra, 1)[0];
+    } else {
+      throw new NotFoundException('Document not found on this verification');
+    }
+
+    this.unlinkStoredFile(removed.storedFileName);
+    this.compactPayloadDocuments(payload);
+    await this.persistOcrProgress(record, payload);
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
+    return {
+      code: HttpStatus.OK,
+      message: 'Document deleted successfully',
+      data: saved,
+    };
+  }
+
+  async uploadMerged(
+    id: string,
+    file: UploadedFileLike | undefined,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    const record = await this.findOwned(id, user);
+    const payload = this.payloadOf(record);
+    if (payload.mergedFile?.storedFileName) {
+      this.unlinkStoredFile(payload.mergedFile.storedFileName);
+    }
+    const savedFile = this.saveFileToDisk(file);
+
+    payload.mergedFile = {
+      fileName: file.originalname ?? savedFile.storedFileName,
+      storedFileName: savedFile.storedFileName,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    await this.persistOcrProgress(record, payload);
+    const saved = (await this.repo.findOne({ where: { id: record.id } }))!;
+    return {
+      code: HttpStatus.OK,
+      message: 'Merged document uploaded successfully',
+      data: saved,
+    };
+  }
+
+  async generateReport(
+    id: string,
+    user: AuthedUser,
+  ): Promise<APIResponseInterface<OcrVerification>> {
+    const record = await this.findOwned(id, user);
+    const payload = this.payloadOf(record);
+    this.compactPayloadDocuments(payload);
+
+    const hasDoc = this.allUploadedDocs(payload).length > 0;
+
+    if (!hasDoc) {
+      throw new BadRequestException('Upload at least one document before generating report');
+    }
+
+    record.status = 'UPLOADING';
+    record.progressMessage = 'Preparing documents for identification...';
+    await this.persistOcrProgress(record, payload);
+
+    this.emitProgress(record);
+
+    this.processOcrInBackground(record.id, record.clientId).catch((err) =>
+      this.logger.error(`Background OCR failed for ${record.id}`, err),
+    );
+
+    return {
+      code: HttpStatus.OK,
+      message: 'Report generation started. You can track progress on the listing page.',
+      data: record,
+    };
+  }
+
+  private async processOcrInBackground(recordId: string, clientId: string): Promise<void> {
+    const record = await this.repo.findOne({ where: { id: recordId } });
+    if (!record) return;
+
+    const payload = this.payloadOf(record);
+    this.compactPayloadDocuments(payload);
+    const allDocs = this.allUploadedDocs(payload);
+    const totalDocs = allDocs.length;
+
+    // --- Phase 1: identify documents (bounded parallel) ---
+    await this.persistOcrProgress(record, payload, {
+      status: 'OCR_PROCESSING',
+      progressMessage: `Identifying documents: 0 / ${totalDocs}...`,
+    });
+    this.emitProgress(record);
+
+    let identified = 0;
+    await this.mapWithConcurrency(allDocs, 3, async (doc) => {
+      try {
+        const filePath = join(OCR_UPLOAD_DIR, doc.storedFileName!);
+        if (!existsSync(filePath)) {
+          this.logger.error(
+            `[OCR:PIPELINE] IDENTIFY skip — file missing on disk record=${recordId} key=${doc.key} stored=${doc.storedFileName}`,
+          );
+          doc.documentType = 'other';
+          doc.label = doc.fileName || 'Other Document';
+          return;
+        }
+
+        const fileBuffer = readFileSync(filePath);
+        const resolvedMimeType =
+          doc.mimeType ||
+          this.inferMimeType(doc.fileName) ||
+          this.inferMimeType(doc.storedFileName);
+
+        this.logger.log(
+          `[OCR:PIPELINE] IDENTIFY record=${recordId} file="${doc.fileName}" mime=${resolvedMimeType ?? 'unknown'} size=${fileBuffer.length}`,
+        );
+
+        let identifyRes = await this.ocrService.identifyDocument({
+          buffer: fileBuffer,
+          mimetype: resolvedMimeType || undefined,
+          originalname: doc.fileName ?? doc.storedFileName!,
+        });
+        let mapped = this.normalizeIdentifiedType(
+          identifyRes.data?.documentType ?? 'Other',
+        );
+        let identifyConf = Number(identifyRes.data?.confidence ?? 0);
+        // Retry only when truly unknown — avoids doubling latency on every soft conf.
+        if (mapped.documentType === 'other' && identifyConf < 0.35 && fileBuffer.length > 0) {
+          this.logger.warn(
+            `[OCR:PIPELINE] IDENTIFY weak → retry record=${recordId} file="${doc.fileName}" type="${mapped.documentType}" conf=${identifyConf}`,
+          );
+          await new Promise((r) => setTimeout(r, 200));
+          identifyRes = await this.ocrService.identifyDocument({
+            buffer: fileBuffer,
+            mimetype: resolvedMimeType || undefined,
+            originalname: doc.fileName ?? doc.storedFileName!,
+          });
+          mapped = this.normalizeIdentifiedType(
+            identifyRes.data?.documentType ?? 'Other',
+          );
+          identifyConf = Number(identifyRes.data?.confidence ?? 0);
+        }
+
+        const identifyData = (identifyRes.data ?? {}) as Record<string, unknown>;
+        const accepted =
+          typeof identifyData.identificationAccepted === 'boolean'
+            ? identifyData.identificationAccepted
+            : mapped.documentType !== 'other' && identifyConf >= 0.55;
+        const uncertain =
+          typeof identifyData.identificationUncertain === 'boolean'
+            ? identifyData.identificationUncertain
+            : !accepted || identifyConf < 0.55;
+        const rawValStatus = String(identifyData.validationStatus ?? '').toUpperCase();
+        const identifyValidationStatus =
+          rawValStatus === 'VALID' ||
+          rawValStatus === 'NEEDS_REVIEW' ||
+          rawValStatus === 'INVALID' ||
+          rawValStatus === 'PROCESSING_FAILED'
+            ? (rawValStatus as NonNullable<OcrDocumentEntry['validationStatus']>)
+            : accepted && !uncertain
+              ? 'VALID'
+              : 'NEEDS_REVIEW';
+
+        // Banking rule: never proceed with a guessed type on refused identification.
+        if (!accepted || mapped.documentType === 'other') {
+          doc.documentType = 'other';
+          doc.label = 'Unknown Document — Needs Review';
+          doc.identificationAccepted = false;
+          doc.identificationUncertain = true;
+          doc.validationStatus = identifyValidationStatus === 'PROCESSING_FAILED'
+            ? 'PROCESSING_FAILED'
+            : 'NEEDS_REVIEW';
+          doc.validationStatusLabel =
+            doc.validationStatus === 'PROCESSING_FAILED'
+              ? 'Processing Failed'
+              : 'Needs Review';
+        } else {
+          doc.documentType = mapped.documentType;
+          doc.label = mapped.label;
+          doc.identificationAccepted = true;
+          doc.identificationUncertain = uncertain;
+          doc.validationStatus = identifyValidationStatus;
+          doc.validationStatusLabel =
+            typeof identifyData.validationStatusLabel === 'string'
+              ? identifyData.validationStatusLabel
+              : uncertain
+                ? 'Needs Review'
+                : 'Valid';
+        }
+        doc.identifyConfidence = identifyConf;
+        this.logger.log(
+          `[OCR:PIPELINE] IDENTIFY OK record=${recordId} file="${doc.fileName}" → type="${doc.documentType}" label="${doc.label}" conf=${identifyConf} accepted=${doc.identificationAccepted} status=${doc.validationStatus}`,
+        );
+      } catch (err: any) {
+        this.logger.error(
+          `[OCR:PIPELINE] IDENTIFY FAIL record=${recordId} file="${doc.fileName}" key=${doc.key} error="${err?.message ?? err}"`,
+          err?.stack,
+        );
+        doc.documentType = 'other';
+        doc.label = 'Unknown Document — Needs Review';
+        doc.identificationAccepted = false;
+        doc.identificationUncertain = true;
+        doc.identifyConfidence = 0;
+        doc.validationStatus = 'PROCESSING_FAILED';
+        doc.validationStatusLabel = 'Processing Failed';
+        doc.ocrError = err?.message ?? 'Document identification failed';
+      } finally {
+        identified += 1;
+        if (identified === totalDocs || identified === 1 || identified % 2 === 0) {
+          await this.persistOcrProgress(record, payload, {
+            progressMessage: `Identifying documents: ${identified} / ${totalDocs} — ${doc.fileName ?? doc.label}`,
+          });
+          this.emitProgress(record);
+        }
+      }
+    });
+    await this.persistOcrProgress(record, payload);
+
+    // --- Phase 2: fetch RCU triggers for identified types (parallel, one persist) ---
+    type DocTriggerBundle = {
+      doc: OcrDocumentEntry;
+      triggers: Array<{
+        code: string;
+        text: string;
+        risk: string;
+        section?: string | null;
+      }>;
+      matchedKey: string | null;
+      matchedLabel: string | null;
+    };
+    const bundles: DocTriggerBundle[] = new Array(allDocs.length);
+
+    await this.persistOcrProgress(record, payload, {
+      progressMessage: `Fetching triggers for ${totalDocs} document(s)...`,
+    });
+    this.emitProgress(record);
+
+    await this.mapWithConcurrency(allDocs, 4, async (doc, index) => {
+      const rcuMatch = await this.rcuTriggersService.findOcrTriggersForDocumentType(
+        doc.documentType,
+        [doc.label, doc.fileName ?? ''],
+      );
+
+      this.logger.log(
+        `RCU OCR triggers for "${doc.label}" (${doc.documentType}): matched=${rcuMatch.matchedKey ?? 'none'} label=${rcuMatch.matchedLabel ?? 'none'} score=${rcuMatch.matchScore} fallbackOther=${rcuMatch.usedFallbackOther} count=${rcuMatch.triggers.length}`,
+      );
+
+      // Never let a fuzzy RCU match rewrite an identified Udyam/MSME certificate into Aadhaar (or vice versa).
+      const identifiedFamily = this.documentTypeFamily(doc.documentType);
+      const matchedFamily = this.documentTypeFamily(
+        `${rcuMatch.matchedKey ?? ''} ${rcuMatch.matchedLabel ?? ''}`,
+      );
+      const crossFamilyConflict =
+        !!identifiedFamily &&
+        !!matchedFamily &&
+        identifiedFamily !== matchedFamily &&
+        !rcuMatch.usedFallbackOther;
+
+      if (
+        rcuMatch.matchedLabel &&
+        !rcuMatch.usedFallbackOther &&
+        !crossFamilyConflict
+      ) {
+        doc.label = rcuMatch.matchedLabel;
+      } else if (crossFamilyConflict) {
+        this.logger.warn(
+          `[OCR:PIPELINE] RCU match ignored (family conflict) identified=${doc.documentType} matched=${rcuMatch.matchedKey}/${rcuMatch.matchedLabel}`,
+        );
+      }
+
+      bundles[index] = {
+        doc,
+        triggers: crossFamilyConflict ? [] : rcuMatch.triggers,
+        matchedKey: crossFamilyConflict ? null : rcuMatch.matchedKey,
+        matchedLabel: crossFamilyConflict ? null : rcuMatch.matchedLabel,
+      };
+    });
+    await this.persistOcrProgress(record, payload);
+
+    // --- Phase 3: verify + forensics (bounded parallel) ---
+    await this.persistOcrProgress(record, payload, {
+      progressMessage: `Running OCR + forensics: 0 / ${totalDocs}...`,
+    });
+    this.emitProgress(record);
+
+    let processed = 0;
+    let hasFailure = false;
+    const forensicCache = new Map<string, Awaited<ReturnType<ForensicChecksService['getOcrForensicConfigs']>>>();
+
+    await this.mapWithConcurrency(bundles.filter(Boolean), 2, async (bundle) => {
+      const doc = bundle.doc;
+      const triggerCount = bundle.triggers.length;
+
+      try {
+        // Do not extract/scrape against a refused or unknown identification.
+        // Uncertain ID → Needs Review (report still generated); hard process errors → case failure.
+        if (
+          doc.identificationAccepted === false ||
+          doc.documentType === 'other' ||
+          doc.validationStatus === 'PROCESSING_FAILED'
+        ) {
+          const hardFail = doc.validationStatus === 'PROCESSING_FAILED';
+          doc.ocrSuccess = false;
+          doc.ocrError =
+            doc.ocrError ||
+            (hardFail
+              ? 'OCR processing failed. Retry upload or use a clearer scan.'
+              : 'Document type was not identified with sufficient confidence. Manual review required — extraction and portal scrape were not run on a guessed type.');
+          doc.validationStatus = hardFail
+            ? 'PROCESSING_FAILED'
+            : (doc.validationStatus === 'PROCESSING_FAILED'
+                ? 'PROCESSING_FAILED'
+                : 'NEEDS_REVIEW');
+          doc.validationStatusLabel =
+            doc.validationStatus === 'PROCESSING_FAILED'
+              ? 'Processing Failed'
+              : 'Needs Review';
+          doc.isValid = false;
+          if (hardFail) hasFailure = true;
+          this.logger.warn(
+            `[OCR:PIPELINE] VERIFY skipped — ${hardFail ? 'processing failed' : 'uncertain identification'} record=${recordId} file="${doc.fileName}" status=${doc.validationStatus}`,
+          );
+          return;
+        }
+
+        const filePath = join(OCR_UPLOAD_DIR, doc.storedFileName!);
+        if (!existsSync(filePath)) {
+          doc.ocrError = 'File not found on disk';
+          doc.ocrSuccess = false;
+          doc.validationStatus = 'PROCESSING_FAILED';
+          doc.validationStatusLabel = 'Processing Failed';
+          doc.isValid = false;
+          hasFailure = true;
+          return;
+        }
+
+        const fileBuffer = readFileSync(filePath);
+        const resolvedMimeType =
+          doc.mimeType ||
+          this.inferMimeType(doc.fileName) ||
+          this.inferMimeType(doc.storedFileName);
+
+        if (!resolvedMimeType) {
+          doc.ocrError = 'Unsupported file type for OCR. Use PDF, JPG, JPEG, PNG, or WEBP.';
+          doc.ocrSuccess = false;
+          doc.validationStatus = 'INVALID';
+          doc.validationStatusLabel = 'Invalid';
+          doc.isValid = false;
+          hasFailure = true;
+          this.logger.warn(`OCR skipped for "${doc.label}" (${doc.key}): unsupported file type`);
+          return;
+        }
+
+        const ocrDocumentType = this.resolveOcrExtractionDocumentType(
+          bundle.matchedKey,
+          doc.documentType,
+          bundle.matchedLabel,
+        );
+
+        this.logger.log(
+          `[OCR:PIPELINE] extraction type="${ocrDocumentType}" rcuKey=${bundle.matchedKey ?? 'none'} triggers=${triggerCount} file="${doc.fileName}"`,
+        );
+
+        const fileCategory = detectForensicFileCategory(
+          doc.fileName ?? doc.storedFileName,
+          resolvedMimeType,
+        );
+        const cacheKey = fileCategory ?? '__default__';
+        if (!forensicCache.has(cacheKey)) {
+          forensicCache.set(
+            cacheKey,
+            await this.forensicChecksService.getOcrForensicConfigs(fileCategory),
+          );
+        }
+        const forensicConfigs = forensicCache.get(cacheKey)!;
+
+        this.logger.log(
+          `[OCR:PIPELINE] Forensics fileCategory=${fileCategory ?? 'unknown'} configs=${forensicConfigs == null ? 'defaults' : forensicConfigs.length} file="${doc.fileName}"`,
+        );
+
+        const ocrRes = await this.ocrService.extractSimple(
+          {
+            buffer: fileBuffer,
+            mimetype: resolvedMimeType,
+            originalname: doc.fileName ?? doc.storedFileName!,
+          },
+          ocrDocumentType,
+          bundle.triggers,
+          forensicConfigs,
+          fileCategory,
+        );
+        const picked = this.pickOcrPayload((ocrRes.data ?? {}) as Record<string, unknown>);
+        doc.extractedData = picked.extractedData;
+        doc.extractedText = picked.extractedText;
+        doc.confidence = picked.confidence;
+        doc.triggerResults = picked.triggerResults;
+        doc.checks = picked.checks;
+        doc.isValid = picked.isValid;
+        doc.validationStatus =
+          picked.validationStatus ??
+          (picked.isValid === true
+            ? 'VALID'
+            : picked.isValid === false
+              ? 'NEEDS_REVIEW'
+              : doc.validationStatus ?? 'NEEDS_REVIEW');
+        doc.validationStatusLabel =
+          picked.validationStatusLabel ??
+          (doc.validationStatus === 'VALID'
+            ? 'Valid'
+            : doc.validationStatus === 'INVALID'
+              ? 'Invalid'
+              : doc.validationStatus === 'PROCESSING_FAILED'
+                ? 'Processing Failed'
+                : 'Needs Review');
+        doc.validationReport = picked.validationReport;
+        if (picked.identifyConfidence != null) {
+          doc.identifyConfidence = picked.identifyConfidence;
+        }
+        doc.fileHash = picked.fileHash ?? doc.fileHash ?? null;
+        doc.fileSizeBytes = picked.fileSizeBytes ?? doc.fileSizeBytes ?? null;
+        doc.pdfMetadata = picked.pdfMetadata;
+        doc.forensicSignals = picked.forensicSignals;
+        doc.forensicSummary = picked.forensicSummary;
+        doc.ocrSuccess = true;
+        doc.ocrError = null;
+        if (triggerCount === 0) {
+          this.logger.warn(
+            `OCR completed for "${doc.label}" but no RCU triggers matched (documentType=${doc.documentType}). Ensure the RCU document type is Active + used in OCR and its name resembles the identified type.`,
+          );
+        }
+        if (picked.forensicSummary) {
+          this.logger.log(
+            `[OCR:PIPELINE] VERIFY+FORENSICS OK record=${recordId} file="${doc.fileName}" type="${doc.documentType}" verdict=${picked.forensicSummary.verdict} score=${picked.forensicSummary.riskScore}`,
+          );
+        } else {
+          this.logger.log(
+            `[OCR:PIPELINE] VERIFY OK record=${recordId} file="${doc.fileName}" type="${doc.documentType}" (no forensic summary)`,
+          );
+        }
+      } catch (err: any) {
+        const errMsg = err?.message ?? 'OCR extraction failed';
+        doc.ocrError = errMsg;
+        doc.ocrSuccess = false;
+        doc.isValid = false;
+        doc.validationStatus = 'PROCESSING_FAILED';
+        doc.validationStatusLabel = 'Processing Failed';
+        hasFailure = true;
+        this.logger.error(
+          `[OCR:PIPELINE] VERIFY FAIL record=${recordId} file="${doc.fileName}" key=${doc.key} type="${doc.documentType}" error="${errMsg}"`,
+          err?.stack,
+        );
+      } finally {
+        processed += 1;
+        if (processed === totalDocs || processed === 1 || processed % 2 === 0) {
+          await this.persistOcrProgress(record, payload, {
+            progressMessage:
+              triggerCount > 0
+                ? `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label} (${triggerCount} triggers)`
+                : `Running OCR + forensics: ${processed} / ${totalDocs} — ${doc.label}`,
+          });
+          this.emitProgress(record);
+        }
+      }
+    });
+    await this.persistOcrProgress(record, payload);
+
+    // --- Phase 4: fuse case-level forensic verdict ---
+    await this.persistOcrProgress(record, payload, { progressMessage: 'Fusing forensic score & verdict...' });
+    this.emitProgress(record);
+
+    payload.caseForensicSummary = this.fuseCaseForensicSummary(allDocs);
+
+    // --- Phase 5: scrape only from confidently identified + extracted docs ---
+    // Never seed portals from refused identification or failed validation.
+    const successfulDocs = allDocs.filter(
+      (d) =>
+        d.ocrSuccess &&
+        d.extractedData &&
+        d.identificationAccepted !== false &&
+        d.documentType !== 'other' &&
+        d.validationStatus !== 'PROCESSING_FAILED' &&
+        d.validationStatus !== 'INVALID',
+    );
+    if (successfulDocs.length > 0) {
+      record.progressMessage = 'Scraping public sites from extracted OCR data...';
+      await this.persistOcrProgress(record, payload);
+      this.emitProgress(record);
+
+      try {
+        const derived = scrapeInputFromExtractedDocs(successfulDocs);
+        record.derivedScrapeInput = derived;
+        const detectedTypes = [
+          ...new Set(
+            successfulDocs
+              .map((d) => String(d.documentType || '').trim())
+              .filter((t) => t && t !== 'other'),
+          ),
+        ];
+        this.logger.log(
+          `[OCR:PIPELINE] SCRAPE seed record=${recordId} types=${detectedTypes.join(',') || '-'} pan=${derived.panNumber ?? '-'} gst=${derived.gstNumber ?? '-'} domain=${derived.companyDomain ?? '-'} pin=${derived.residential?.pincode ?? '-'}`,
+        );
+
+        const { scrapePayload, hasFailure: scrapeFail, cascadeNotes } =
+          await this.enrichment.enrichFromDetails(derived, {
+            mode: 'ocr',
+            documentTypes: detectedTypes,
+            maxPortalChecks: 12,
+            portalConcurrency: 5,
+            portalTimeoutMs: 6000,
+          });
+        record.scrapePayload = scrapePayload;
+        // Soft scrape failures do not fail the whole OCR case unless OCR itself failed.
+        if (scrapeFail) {
+          this.logger.warn(
+            `[OCR:PIPELINE] SCRAPE partial failure record=${recordId} notes=${cascadeNotes.join(' | ')}`,
+          );
+        } else {
+          this.logger.log(
+            `[OCR:PIPELINE] SCRAPE OK record=${recordId} notes=${cascadeNotes.join(' | ') || 'none'}`,
+          );
+        }
+      } catch (err: any) {
+        this.logger.error(
+          `[OCR:PIPELINE] SCRAPE FAIL record=${recordId} error="${err?.message ?? err}"`,
+          err?.stack,
+        );
+        record.scrapePayload = {
+          pipeline: {
+            source: 'verification-enrichment',
+            scrapedAt: new Date().toISOString(),
+            success: false,
+            error: err?.message ?? 'Post-OCR scrape enrichment failed',
+          },
+        };
+      }
+    } else {
+      record.scrapePayload = null;
+      record.derivedScrapeInput = null;
+    }
+
+    const failedDocs = allDocs.filter((d) => d.storedFileName && !d.ocrSuccess);
+    const failedNames = failedDocs.map((d) => d.label).join(', ');
+    const caseVerdict = payload.caseForensicSummary?.verdictLabel;
+    const caseScore = payload.caseForensicSummary?.riskScore;
+    const scrapeEntries = Object.entries(record.scrapePayload ?? {}).filter(
+      ([k, v]) => k !== 'pipeline' && !!v,
+    );
+    const scrapeOk = scrapeEntries.some(([, v]) => !!(v as { success?: boolean })?.success);
+    const finalStatus = hasFailure ? 'FAILED' : 'REPORT_GENERATED';
+    const finalMessage = hasFailure
+      ? `Failed: ${failedNames}`
+      : caseVerdict
+        ? `Report generated — ${caseVerdict} (risk ${caseScore}/100)${scrapeOk ? ' · scrapes done' : ''}`
+        : 'Report generated successfully';
+    await this.persistOcrProgress(record, payload, {
+      status: finalStatus,
+      progressMessage: finalMessage,
+      reportGeneratedAt: hasFailure ? null : new Date(),
+    });
+    this.emitProgress(record);
+  }
+
+  private emitProgress(record: OcrVerification): void {
+    this.ocrGateway.emitProgress(record.clientId, {
+      id: record.id,
+      status: record.status,
+      progressMessage: record.progressMessage ?? '',
+    });
+  }
+
+  async delete(id: string, user: AuthedUser): Promise<APIResponseInterface<null>> {
+    const record = await this.findOwned(id, user);
+    await this.repo.remove(record);
+    return {
+      code: HttpStatus.OK,
+      message: 'OCR verification deleted successfully',
+      data: null,
+    };
+  }
+}

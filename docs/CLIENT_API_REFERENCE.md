@@ -1,6 +1,6 @@
 # Client APIs – Endpoints, Payloads & Responses
 
-**Base URL:** `http://localhost:3000/api` (or your `PORT` and `API_PREFIX`)
+**Base URL:** `http://localhost:3200/api` (or your `PORT` and `API_PREFIX`)
 
 **Auth:** Send JWT in header: `Authorization: Bearer <accessToken>`
 

@@ -3,10 +3,13 @@ import {
   Column,
   PrimaryGeneratedColumn,
   OneToMany,
+  ManyToOne,
+  JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../../user/entities/user.entity';
+import { SubscriptionPlan } from '../../subscription-plan/entities/subscription-plan.entity';
 import { ClientSettings } from '../interfaces/client-settings.interface';
 
 @Entity('clients')
@@ -114,6 +117,13 @@ export class Client {
 
   @Column({ type: 'json', nullable: true })
   setting: ClientSettings | null;
+
+  @Column({ name: 'subscription_plan_id', type: 'uuid', nullable: true })
+  subscriptionPlanId: string | null;
+
+  @ManyToOne(() => SubscriptionPlan, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'subscription_plan_id' })
+  subscriptionPlan: SubscriptionPlan | null;
 
   @OneToMany(() => User, (user) => user.client)
   users: User[];

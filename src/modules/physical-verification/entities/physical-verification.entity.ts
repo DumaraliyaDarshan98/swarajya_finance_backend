@@ -3,11 +3,13 @@ import {
   Column,
   PrimaryGeneratedColumn,
   ManyToOne,
+  OneToMany,
   CreateDateColumn,
   UpdateDateColumn,
   Index,
 } from 'typeorm';
 import { Client } from '../../client/entities/client.entity';
+import { PhysicalVerificationVisit } from './physical-verification-visit.entity';
 import type {
   DocumentTypeVerification,
   FieldAgentSubmission,
@@ -15,6 +17,7 @@ import type {
   PhysicalReportPayload,
   PhysicalVerificationStatus,
 } from '../interfaces/physical-verification.interface';
+import type { PhysicalVerificationPriority } from '../interfaces/physical-verification-visit.interface';
 
 @Entity('physical_verifications')
 export class PhysicalVerification {
@@ -24,7 +27,7 @@ export class PhysicalVerification {
   @ManyToOne(() => Client, { nullable: false })
   client: Client;
 
-  @Column({ name: 'client_id', type: 'uuid' })
+  @Column({ name: 'client_id', type: 'varchar', length: 36 })
   @Index()
   clientId: string;
 
@@ -55,6 +58,12 @@ export class PhysicalVerification {
   @Column({ type: 'varchar', length: 50, default: 'DRAFT' })
   status: PhysicalVerificationStatus;
 
+  @Column({ type: 'varchar', length: 20, default: 'MEDIUM' })
+  priority: PhysicalVerificationPriority;
+
+  @OneToMany(() => PhysicalVerificationVisit, (visit) => visit.parent)
+  visits: PhysicalVerificationVisit[];
+
   @Column({ name: 'report_generated_at', type: 'timestamp', nullable: true })
   reportGeneratedAt: Date | null;
 
@@ -63,7 +72,7 @@ export class PhysicalVerification {
   @Index()
   agreementNumber: string | null;
 
-  @Column({ name: 'customer_name', type: 'varchar', length: 255, nullable: true })
+  @Column({ name: 'customer_name', type: 'varchar', length: 191, nullable: true })
   @Index()
   customerName: string | null;
 
@@ -76,11 +85,11 @@ export class PhysicalVerification {
   @Column({ name: 'city', type: 'varchar', length: 100, nullable: true })
   city: string | null;
 
-  @Column({ name: 'assigned_field_agent_user_id', type: 'uuid', nullable: true })
+  @Column({ name: 'assigned_field_agent_user_id', type: 'varchar', length: 36, nullable: true })
   @Index()
   assignedFieldAgentUserId: string | null;
 
-  @Column({ name: 'assigned_field_agent_name', type: 'varchar', length: 255, nullable: true })
+  @Column({ name: 'assigned_field_agent_name', type: 'varchar', length: 191, nullable: true })
   assignedFieldAgentName: string | null;
 
   @Column({ name: 'assigned_at', type: 'timestamp', nullable: true })

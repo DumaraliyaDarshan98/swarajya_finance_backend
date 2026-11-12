@@ -3,9 +3,19 @@ import type {
   PhysicalReportPayload,
 } from '../interfaces/physical-verification.interface';
 import { PhysicalVerification } from '../entities/physical-verification.entity';
+import { PhysicalVerificationVisit } from '../entities/physical-verification-visit.entity';
+import { visitAddressLabel } from './visit-workflow.helper';
 
-export function buildPhysicalReport(record: PhysicalVerification): PhysicalReportPayload {
+export function buildPhysicalReport(
+  record: PhysicalVerification,
+  visits: PhysicalVerificationVisit[] = [],
+): PhysicalReportPayload {
   const a = record.applicant;
+  const sampledDocuments = buildSampledDocuments(record, visits);
+  const fieldVisitPhotos = visits.length
+    ? buildFieldVisitPhotosFromVisits(visits)
+    : buildFieldVisitPhotos(a);
+
   return {
     caseDetails: {
       lanNo: a.agreementNumber || record.agreementNumber || '—',
@@ -17,23 +27,7 @@ export function buildPhysicalReport(record: PhysicalVerification): PhysicalRepor
     trigger:
       record.completeRemark?.trim() ||
       `Visited ${a.customerName} for physical verification.`,
-    sampledDocuments: [
-      {
-        type: 'Residence Profile',
-        verificationRemark: `RESIDENCE PROFILE - Visited ${a.customerName} at ${a.residential?.address || 'N/A'}. Case status marked as Positive.`,
-        additionalNote: record.completeRemark || 'Additional verification notes.',
-      },
-      {
-        type: 'Office Profile',
-        verificationRemark: `OFFICE PROFILE - Verified office address at ${a.office?.address || 'N/A'}.`,
-        additionalNote: 'Office verification completed.',
-      },
-      {
-        type: 'Salary Slip',
-        verificationRemark: 'Salary slip verified and matched with application.',
-        additionalNote: 'Document authenticity confirmed.',
-      },
-    ],
+    sampledDocuments,
     referNegativeFraud: {
       desktopCheck: 'Done',
       verifierName: 'Field Verifier',
@@ -49,8 +43,95 @@ export function buildPhysicalReport(record: PhysicalVerification): PhysicalRepor
       vendorName: 'Extreme Financial Services Pvt.Ltd.',
       verifierName: 'Field Verifier',
     },
-    fieldVisitPhotos: buildFieldVisitPhotos(a),
+    fieldVisitPhotos,
   };
+}
+
+function buildSampledDocuments(
+  record: PhysicalVerification,
+  visits: PhysicalVerificationVisit[],
+) {
+  const a = record.applicant;
+  if (!visits.length) {
+    return [
+      {
+        type: 'Residence Profile',
+        verificationRemark: `RESIDENCE PROFILE - Visited ${a.customerName} at ${a.residential?.address || 'N/A'}. Case status marked as Positive.`,
+        additionalNote: record.completeRemark || 'Additional verification notes.',
+      },
+      {
+        type: 'Office Profile',
+        verificationRemark: `OFFICE PROFILE - Verified office address at ${a.office?.address || 'N/A'}.`,
+        additionalNote: 'Office verification completed.',
+      },
+      {
+        type: 'Salary Slip',
+        verificationRemark: 'Salary slip verified and matched with application.',
+        additionalNote: 'Document authenticity confirmed.',
+      },
+    ];
+  }
+
+  return visits.map((visit) => {
+    const label = visit.addressType === 'RESIDENTIAL' ? 'Residence Profile' : 'Office Profile';
+    const submission = visit.fieldAgentSubmission;
+    const remark =
+      visit.addressType === 'RESIDENTIAL'
+        ? submission?.residential?.executiveRemark
+        : submission?.office?.executiveRemark;
+    return {
+      type: label,
+      verificationRemark:
+        remark?.trim() ||
+        `${label.toUpperCase()} - Verified at ${visitAddressLabel(visit)}. Case status marked as Positive.`,
+      additionalNote:
+        (visit.addressType === 'RESIDENTIAL'
+          ? submission?.residential?.additionalNote
+          : submission?.office?.additionalNote) ||
+        record.completeRemark ||
+        'Additional verification notes.',
+    };
+  });
+}
+
+function buildFieldVisitPhotosFromVisits(visits: PhysicalVerificationVisit[]) {
+  return visits.map((visit) => {
+    const submission = visit.fieldAgentSubmission;
+    const geo =
+      visit.addressType === 'RESIDENTIAL'
+        ? submission?.residential?.addressGeo
+        : submission?.office?.addressGeo;
+    const photos =
+      visit.addressType === 'RESIDENTIAL'
+        ? submission?.residential?.photos
+        : submission?.office?.photos;
+
+    const photoEntries: { label: string; url: string }[] = [];
+    if (photos?.locationSelfie) {
+      photoEntries.push({ label: 'Location Selfy Image', url: photos.locationSelfie });
+    }
+    if (photos?.namePlateSelfie) {
+      photoEntries.push({ label: 'Name Plate Selfy Image', url: photos.namePlateSelfie });
+    }
+    if (photos?.frontView) {
+      photoEntries.push({ label: 'Front View image', url: photos.frontView });
+    }
+    if (photos?.visitingCard) {
+      photoEntries.push({ label: 'Visiting Card Image', url: photos.visitingCard });
+    }
+
+    return {
+      addressType: visit.addressType === 'RESIDENTIAL' ? ('Residential' as const) : ('Office' as const),
+      landmarkDetails: geo?.landmarkDetails || visit.addressSnapshot?.landmark || 'Nearby landmark information',
+      longitude: geo?.longitude || submission?.agentLocation?.longitude || '—',
+      latitude: geo?.latitude || submission?.agentLocation?.latitude || '—',
+      googleStreetViewLink: geo?.googleStreetViewLink || 'https://www.google.com/maps/search/',
+      lastUpdate: geo?.lastUpdate || String(new Date().getFullYear()),
+      photos: photoEntries.length
+        ? photoEntries
+        : [{ label: 'Location Selfy Image', url: 'assets/img/location-view.png' }],
+    };
+  });
 }
 
 function buildFieldVisitPhotos(a: PhysicalPartyDetails) {

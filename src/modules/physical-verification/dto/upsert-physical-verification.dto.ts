@@ -35,6 +35,7 @@ class DocumentTypeVerificationDto {
   @IsOptional() @IsString() documentPrimaryKey?: string;
   @IsOptional() @IsString() remark?: string;
   @IsOptional() @IsString() fileName?: string;
+  @IsOptional() @IsString() fileUrl?: string;
 }
 
 export class UpsertPhysicalVerificationDto {
@@ -69,6 +70,10 @@ export class UpsertPhysicalVerificationDto {
   @ValidateNested({ each: true })
   @Type(() => DocumentTypeVerificationDto)
   documentTypeVerifications?: DocumentTypeVerificationDto[];
+
+  @IsOptional()
+  @IsIn(['HIGH', 'MEDIUM', 'LOW'])
+  priority?: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
 export class SubmitPhysicalVerificationDto {

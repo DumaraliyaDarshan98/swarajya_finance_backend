@@ -3,6 +3,7 @@ import {
   IsNotEmpty,
   IsString,
   IsOptional,
+  IsUUID,
   Matches,
   ValidateNested,
 } from 'class-validator';
@@ -135,4 +136,8 @@ export class CreateClientDto {
   @ValidateNested()
   @Type(() => ClientSettingsDto)
   setting?: ClientSettingsDto;
+
+  @IsUUID('4', { message: 'Subscription plan is required' })
+  @IsNotEmpty({ message: 'Subscription plan is required' })
+  subscriptionPlanId: string;
 }

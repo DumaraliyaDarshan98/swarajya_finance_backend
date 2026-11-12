@@ -3,6 +3,7 @@ import {
   Column,
   PrimaryGeneratedColumn,
   ManyToOne,
+  JoinColumn,
   Index,
 } from 'typeorm';
 import { FieldAssistant } from './field-assistant.entity';
@@ -23,6 +24,7 @@ export class FieldAssistantAddress {
   updatedBy: string | null;
 
   @ManyToOne(() => FieldAssistant, (fa) => fa.addresses, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'field_assistant_id' })
   fieldAssistant: FieldAssistant;
 
   @Column({ name: 'field_assistant_id', type: 'uuid' })

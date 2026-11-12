@@ -13,12 +13,21 @@ export type PhysicalLogAction =
   | 'SUBMITTED'
   | 'AGENT_ASSIGNED'
   | 'AGENT_REASSIGNED'
+  | 'AGENT_DECLINED'
+  | 'TRIP_STARTED'
+  | 'TRIP_ENDED'
   | 'AGENT_DRAFT_SAVED'
   | 'AGENT_SUBMITTED'
   | 'APPROVED'
   | 'REJECTED'
   | 'COMPLETED'
-  | 'FAILED';
+  | 'FAILED'
+  | 'AUTO_CALL_INITIATED'
+  | 'AUTO_CALL_COMPLETED'
+  | 'AUTO_CALL_FAILED'
+  | 'RECORDING_RECEIVED'
+  | 'CALL_RECALLED'
+  | 'CALL_FAILED';
 
 @Entity('physical_logs')
 export class PhysicalLog {
@@ -31,6 +40,10 @@ export class PhysicalLog {
   @Column({ name: 'physical_verification_id', type: 'uuid' })
   @Index()
   physicalVerificationId: string;
+
+  @Column({ name: 'physical_verification_visit_id', type: 'uuid', nullable: true })
+  @Index()
+  physicalVerificationVisitId: string | null;
 
   @Column({ type: 'varchar', length: 50 })
   action: PhysicalLogAction;

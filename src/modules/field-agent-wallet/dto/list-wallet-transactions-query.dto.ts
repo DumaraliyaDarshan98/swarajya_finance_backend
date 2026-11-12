@@ -20,6 +20,10 @@ export class ListWalletTransactionsQueryDto {
   search?: string;
 
   @IsOptional()
+  @IsString()
+  verificationType?: string;
+
+  @IsOptional()
   @IsUUID()
   fieldAgentUserId?: string;
 }

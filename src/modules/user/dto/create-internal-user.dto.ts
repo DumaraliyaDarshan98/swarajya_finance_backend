@@ -8,7 +8,7 @@ import {
   IsUUID,
   Matches,
 } from 'class-validator';
-import { Role } from '../../../enum/role.enum';
+import { Role } from '../../../common/enums/role.enum';
 
 export class CreateInternalUserDto {
   @IsString()
