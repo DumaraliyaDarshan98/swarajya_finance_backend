@@ -39,6 +39,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { JobApplicationModule } from './modules/job-application/job-application.module';
 import { DepartmentsModule } from './modules/departments/departments.module';
 import { DesignationsModule } from './modules/designations/designations.module';
+import { HiringPositionsModule } from './modules/hiring-positions/hiring-positions.module';
 
 @Module({
   imports: [
@@ -94,6 +95,7 @@ import { DesignationsModule } from './modules/designations/designations.module';
     AuditLogModule,
     DepartmentsModule,
     DesignationsModule,
+    HiringPositionsModule,
   ],
   controllers: [AppController],
   providers: [

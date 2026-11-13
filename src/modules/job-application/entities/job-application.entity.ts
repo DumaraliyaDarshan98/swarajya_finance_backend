@@ -5,7 +5,10 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  ManyToOne,
+  JoinColumn,
 } from 'typeorm';
+import { HiringPosition } from '../../hiring-positions/entities/hiring-position.entity';
 
 export type JobApplicationStatus = 'NEW' | 'REVIEWED' | 'SHORTLISTED' | 'REJECTED';
 
@@ -26,6 +29,13 @@ export class JobApplication {
 
   @Column({ type: 'varchar', length: 255 })
   skill: string;
+
+  @Column({ name: 'hiring_position_id', type: 'char', length: 36, nullable: true })
+  hiringPositionId: string | null;
+
+  @ManyToOne(() => HiringPosition, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'hiring_position_id' })
+  hiringPosition: HiringPosition | null;
 
   @Column({ type: 'varchar', length: 150, nullable: true })
   designation: string | null;

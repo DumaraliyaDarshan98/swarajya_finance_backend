@@ -16,8 +16,7 @@ import {
 import { ListJobApplicationQueryDto } from '../dto/list-job-application-query.dto';
 import { APIResponseInterface } from '../../../common/interfaces/response.interface';
 import { MailService } from '../../mail/services/mail.service';
-import { DepartmentsService } from '../../departments/services/departments.service';
-import { DesignationsService } from '../../designations/services/designations.service';
+import { HiringPosition } from '../../hiring-positions/entities/hiring-position.entity';
 
 export const JOB_RESUME_UPLOAD_DIR = join(
   process.cwd(),
@@ -32,9 +31,9 @@ export class JobApplicationService {
   constructor(
     @InjectRepository(JobApplication)
     private readonly repo: Repository<JobApplication>,
+    @InjectRepository(HiringPosition)
+    private readonly hiringPositionRepo: Repository<HiringPosition>,
     private readonly mailService: MailService,
-    private readonly departmentsService: DepartmentsService,
-    private readonly designationsService: DesignationsService,
   ) {}
 
   async submit(input: {
@@ -44,6 +43,7 @@ export class JobApplicationService {
     skill: string;
     designation: string;
     department: string;
+    hiringPositionId?: string | null;
     location: string;
     city: string;
     state: string;
@@ -59,8 +59,9 @@ export class JobApplicationService {
     const email = input.email?.trim().toLowerCase();
     const mobileNumber = input.mobileNumber?.trim();
     const skill = input.skill?.trim();
-    const designation = input.designation?.trim();
-    const department = input.department?.trim();
+    let designation = input.designation?.trim();
+    let department = input.department?.trim();
+    let hiringPositionId: string | null = null;
     const location = input.location?.trim();
     const city = input.city?.trim();
     const state = input.state?.trim();
@@ -80,8 +81,22 @@ export class JobApplicationService {
     if (!skill || skill.length < 2) {
       throw new BadRequestException('Please enter your primary skill(s)');
     }
-    await this.designationsService.assertActiveName(designation);
-    await this.departmentsService.assertActiveName(department);
+
+    const positionId = input.hiringPositionId?.trim();
+    if (!positionId) {
+      throw new BadRequestException('Please select a hiring position');
+    }
+    const position = await this.hiringPositionRepo.findOne({
+      where: { id: positionId, isActive: true },
+    });
+    if (!position) {
+      throw new BadRequestException(
+        'Please select a valid active hiring position',
+      );
+    }
+    hiringPositionId = position.id;
+    department = position.departmentName;
+    designation = position.designationName;
     if (!location || location.length < 2) {
       throw new BadRequestException('Please enter your location');
     }
@@ -111,6 +126,7 @@ export class JobApplicationService {
       email,
       mobileNumber: mobileNumber.replace(/\s+/g, ''),
       skill,
+      hiringPositionId,
       designation,
       department,
       location,
@@ -156,25 +172,33 @@ export class JobApplicationService {
   ): Promise<APIResponseInterface<JobApplication[]>> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const qb = this.repo.createQueryBuilder('j').orderBy('j.created_at', 'DESC');
+    const qb = this.repo
+      .createQueryBuilder('j')
+      .leftJoinAndSelect('j.hiringPosition', 'hp')
+      .orderBy('j.createdAt', 'DESC');
 
     if (query.status) {
       qb.andWhere('j.status = :status', { status: query.status });
     }
+    if (query.hiringPositionId) {
+      qb.andWhere('j.hiringPositionId = :pid', {
+        pid: query.hiringPositionId,
+      });
+    }
     if (query.search?.trim()) {
       const q = `%${query.search.trim()}%`;
       qb.andWhere(
-        `(j.full_name LIKE :q OR j.email LIKE :q OR j.mobile_number LIKE :q OR j.skill LIKE :q
+        `(j.fullName LIKE :q OR j.email LIKE :q OR j.mobileNumber LIKE :q OR j.skill LIKE :q
           OR j.designation LIKE :q OR j.department LIKE :q OR j.location LIKE :q
-          OR j.city LIKE :q OR j.state LIKE :q OR j.pincode LIKE :q OR j.full_address LIKE :q)`,
+          OR j.city LIKE :q OR j.state LIKE :q OR j.pincode LIKE :q OR j.fullAddress LIKE :q
+          OR hp.title LIKE :q)`,
         { q },
       );
     }
 
-    const [rows, total] = await qb
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    // Avoid getManyAndCount + join DISTINCT quirks on MySQL.
+    const total = await qb.clone().getCount();
+    const rows = await qb.skip((page - 1) * limit).take(limit).getMany();
 
     return {
       code: HttpStatus.OK,
@@ -185,7 +209,10 @@ export class JobApplicationService {
   }
 
   async findOne(id: string): Promise<APIResponseInterface<JobApplication>> {
-    const row = await this.repo.findOne({ where: { id } });
+    const row = await this.repo.findOne({
+      where: { id },
+      relations: ['hiringPosition'],
+    });
     if (!row) throw new NotFoundException('Application not found');
     return {
       code: HttpStatus.OK,
