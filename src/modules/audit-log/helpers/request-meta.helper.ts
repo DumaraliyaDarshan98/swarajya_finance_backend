@@ -73,6 +73,7 @@ export function inferModuleFromPath(path: string | null): string {
     if (next === 'portal-list') return 'PORTAL_LIST';
     if (next === 'departments') return 'DEPARTMENTS';
     if (next === 'designations') return 'DESIGNATIONS';
+    if (next === 'hiring-positions') return 'HIRING_POSITIONS';
     return 'ADMIN';
   }
   return segment.replace(/-/g, '_').toUpperCase().slice(0, 80);

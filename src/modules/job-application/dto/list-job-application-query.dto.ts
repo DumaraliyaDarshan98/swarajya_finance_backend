@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListJobApplicationQueryDto {
@@ -22,4 +22,8 @@ export class ListJobApplicationQueryDto {
   @IsOptional()
   @IsIn(['NEW', 'REVIEWED', 'SHORTLISTED', 'REJECTED'])
   status?: string;
+
+  @IsOptional()
+  @IsUUID()
+  hiringPositionId?: string;
 }

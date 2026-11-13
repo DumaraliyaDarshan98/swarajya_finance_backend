@@ -84,6 +84,8 @@ export class JobApplicationPublicController {
       skill: body.skill ?? '',
       designation: body.designation ?? '',
       department: body.department ?? '',
+      hiringPositionId:
+        body.hiringPositionId ?? body.hiring_position_id ?? null,
       location: body.location ?? '',
       city: body.city ?? '',
       state: body.state ?? '',
